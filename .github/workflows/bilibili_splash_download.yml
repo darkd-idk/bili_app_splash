@@ -8,7 +8,7 @@ on:
     branches:
       - main
     paths-ignore:
-      - 'app_splash/**'  # 忽略开屏图目录的更改，避免触发循环
+      - 'app_splash/**'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -18,18 +18,26 @@ jobs:
   sync-splash-images:
     name: 同步B站开屏图
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
     
     steps:
       - name: 检出代码库
-        uses: actions/checkout@v4  # 升级到 v4
+        uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          # 优化大型仓库的检出选项
+          fetch-depth: 1  # 只获取最近一次提交
+          sparse-checkout: |  # 只检出必要的文件
+            get_app_splash.py
+            requirements.txt
+            .github/
+            app_splash/
+          sparse-checkout-cone-mode: false
+          lfs: false  # 除非明确需要
 
       - name: 设置Python环境
-        uses: actions/setup-python@v5  # 升级到 v5
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.12'  # 使用最新的稳定Python版本
+          python-version: '3.12'
 
       - name: 安装依赖
         run: |
@@ -48,57 +56,69 @@ jobs:
 
       - name: 提交变更
         run: |
-          git status
-          git diff --quiet --exit-code && git diff --staged --quiet --exit-code || {
-            git add -A
+          # 检查是否有变更需要提交
+          if ! git diff --quiet || ! git diff --staged --quiet; then
+            git add .
             git commit -m "自动更新开屏图 - $(date +'%Y-%m-%d %H:%M')"
-          }
+          else
+            echo "没有需要提交的变更"
+          fi
         shell: bash
 
       - name: 推送到仓库
         run: |
-          if git diff --quiet origin/$GITHUB_REF_NAME HEAD; then
-            echo "没有需要推送的更改"
-          else
-            git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}
-            git push origin HEAD:$GITHUB_REF_NAME
-          fi
+          # 安全推送变更
+          git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}
+          
+          # 尝试推送，最多重试3次
+          n=0
+          until [ "$n" -ge 3 ]
+          do
+             git push origin HEAD:$GITHUB_REF_NAME && break
+             n=$((n+1))
+             echo "推送失败，10秒后重试..."
+             sleep 10
+          done
         env:
           GITHUB_REF_NAME: ${{ github.ref_name }}
         shell: bash
 
       - name: 生成Markdown报告
         run: |
-          {
-            echo "# B站开屏图同步报告"
-            echo ""
-            echo "**同步时间**: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
-            echo "**图片总数**: $(find app_splash -maxdepth 1 -type f $ -name "*.jpg" -o -name "*.png" -o -name "*.webp" $ | wc -l)"
-            echo ""
-            echo "## 最新5个文件"
-            ls -lt -d app_splash/* | head -n 5
-            echo ""
-            echo "## 状态"
-            echo "✅ 所有文件已成功同步"
-          } > report.md
+          # 安全的图片计数
+          if [ -d app_splash ]; then
+            image_count=$(find app_splash -maxdepth 1 -type f $ -name "*.jpg" -o -name "*.png" -o -name "*.webp" $ 2>/dev/null | wc -l)
+          else
+            image_count=0
+          fi
+          
+          # 获取最新5个文件（避免管道错误）
+          if [ -d app_splash ] && [ "$(ls -A app_splash 2>/dev/null)" ]; then
+            latest_files=$(ls -t app_splash 2>/dev/null | head -n 5 | awk '{print "- "$0}')
+          else
+            latest_files="- 没有找到文件"
+          fi
+          
+          # 生成报告
+          cat << EOF > report.md
+# B站开屏图同步报告
+
+**同步时间**: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
+**图片总数**: $image_count
+
+## 最新5个文件
+$latest_files
+
+## 状态
+✅ 所有文件已成功同步
+EOF
         shell: bash
 
       - name: 上传报告制品
-        uses: actions/upload-artifact@v4  # 升级到 v4
+        uses: actions/upload-artifact@v4
         with:
           name: splash-report
           path: |
             report.md
             app_splash/download_report.json
           retention-days: 7
-
-      - name: 检查API状态
-        run: |
-          echo "工作流状态: ${{ job.status }}"
-          if [ -f app_splash/download_report.json ]; then
-            echo "报告存在"
-            jq . app_splash/download_report.json
-          else
-            echo "未找到报告文件"
-          fi
-        shell: bash
