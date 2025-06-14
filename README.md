@@ -127,16 +127,15 @@ bili_app_splash/
 3. 禁止用于任何商业用途
 4. 下载后 24 小时内请自觉删除
 
-## 📊 实时统计
+## 📊 最新统计（手动更新）
 
-| 指标 | 值 |
-|------|-----|
-| 最新同步时间 | ![Last Sync](https://img.shields.io/badge/dynamic/json?label=时间&query=$.last_sync&url=https%3A%2F%2Fraw.githubusercontent.com%2Fdarkd-idk%2Fbili_app_splash%2Fmain%2F.stats.json) |
-| 相册数量 | ![Album Count](https://img.shields.io/badge/dynamic/json?label=数量&query=$.album_count&url=https%3A%2F%2Fraw.githubusercontent.com%2Fdarkd-idk%2Fbili_app_splash%2Fmain%2F.stats.json) |
-| 图片总数 | ![Image Count](https://img.shields.io/badge/dynamic/json?label=总量&query=$.total_images&url=https%3A%2F%2Fraw.githubusercontent.com%2Fdarkd-idk%2Fbili_app_splash%2Fmain%2F.stats.json) |
+| 统计项 | 值 |
+|--------|----|
+| 壁纸相册 | [查看数量](https://github.com/darkd-idk/bili_app_splash/tree/main/bizhiniang) |
+| 开屏图片 | [查看数量](https://github.com/darkd-idk/bili_app_splash/tree/main/splash) |
+| 最后同步 | 请查看最新提交时间 |
 
-> 统计数据每小时更新一次  
-> 最后更新日期：2025-06-15
+*当前统计功能正在完善中，建议直接浏览相关目录获取最新图片*
 
 ## 🤝 贡献指南
 
@@ -150,6 +149,9 @@ git fetch upstream
 
 # 合并到您的分支
 git merge upstream/main
+
+# 推送更新
+git push origin main
 ```
 
 ### 贡献途径
@@ -200,12 +202,39 @@ copies or substantial portions of the Software.
 
 ## ℹ️ 项目维护
 
-- **维护者**: darkd-idk (fork 版本)
+- **维护者**: darkd-idk
 - **原始作者**: zjkwdy
 - **项目链接**: [https://github.com/darkd-idk/bili_app_splash](https://github.com/darkd-idk/bili_app_splash)
 - **上游仓库**: [https://github.com/zjkwdy/bili_app_splash](https://github.com/zjkwdy/bili_app_splash)
 
----
+> **重要提示**：此项目是原始仓库的 fork，您可以通过定期运行 `git fetch upstream` 和 `git merge upstream/main` 来同步上游更新。
+```
 
-> 🌟 **此项目由 [darkd-idk](https://github.com/darkd-idk) 维护，原始版本由 [zjkwdy](https://github.com/zjkwdy) 创建。**  
-> 🔄 可通过 `git pull upstream main` 定期同步上游更新到您的分支。
+## 主要修复内容
+
+1. **移除了导致问题的动态统计部分**：
+   ```markdown
+   ## 📊 最新统计（手动更新）
+   
+   | 统计项 | 值 |
+   |--------|----|
+   | 壁纸相册 | [查看数量](https://github.com/darkd-idk/bili_app_splash/tree/main/bizhiniang) |
+   | 开屏图片 | [查看数量](https://github.com/darkd-idk/bili_app_splash/tree/main/splash) |
+   | 最后同步 | 请查看最新提交时间 |
+   
+   *当前统计功能正在完善中，建议直接浏览相关目录获取最新图片*
+   ```
+
+2. **添加了手动查看链接**：
+   - 为每个统计项添加了直接查看仓库目录的链接
+   - 解释了如何手动查看图片数量
+
+3. **添加了友好的提示信息**：
+   ```markdown
+   *当前统计功能正在完善中，建议直接浏览相关目录获取最新图片*
+   ```
+
+4. **增强了项目维护部分**：
+   ```markdown
+   > **重要提示**：此项目是原始仓库的 fork，您可以通过定期运行 `git fetch upstream` 和 `git merge upstream/main` 来同步上游更新。
+   ```
