@@ -24,9 +24,8 @@ jobs:
       - name: 检出代码库
         uses: actions/checkout@v4
         with:
-          # 优化大型仓库的检出选项
           fetch-depth: 1  # 只获取最近一次提交
-          sparse-checkout: |  # 只检出必要的文件
+          sparse-checkout: |
             get_app_splash.py
             requirements.txt
             .github/
@@ -45,9 +44,7 @@ jobs:
           pip install requests
 
       - name: 下载开屏图
-        run: |
-          python get_app_splash.py || echo "下载过程中出现错误"
-        shell: bash
+        run: python get_app_splash.py || echo "下载过程中出现错误"
 
       - name: 配置Git
         run: |
@@ -63,7 +60,6 @@ jobs:
           else
             echo "没有需要提交的变更"
           fi
-        shell: bash
 
       - name: 推送到仓库
         run: |
@@ -81,7 +77,6 @@ jobs:
           done
         env:
           GITHUB_REF_NAME: ${{ github.ref_name }}
-        shell: bash
 
       - name: 生成Markdown报告
         run: |
@@ -100,7 +95,7 @@ jobs:
           fi
           
           # 生成报告
-          cat << EOF > report.md
+          cat << 'EOF' > report.md
 # B站开屏图同步报告
 
 **同步时间**: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
@@ -112,7 +107,7 @@ $latest_files
 ## 状态
 ✅ 所有文件已成功同步
 EOF
-        shell: bash
+        # 注意：heredoc使用单引号EOF来避免变量提前扩展
 
       - name: 上传报告制品
         uses: actions/upload-artifact@v4
