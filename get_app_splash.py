@@ -1,22 +1,10 @@
 #!/usr/bin/env python3
 """
 Bilibili 开屏图下载脚本 - 自动化获取 Bilibili 应用启动画面图片
+修复时间计算错误问题
 
-功能：
-1. 从 Bilibili API 获取开屏图列表
-2. 下载开屏图片到本地目录
-3. 生成下载报告和元数据
-4. 提供详细的错误处理和日志记录
-
-参数：
-无需命令行参数，所有配置在脚本内定义
-
-使用：
-python get_app_splash.py
-
-作者：GitHub Actions 工作流
-版本：1.2.0
-最后更新：2024-06-15
+版本：1.2.1
+最后更新：2025-06-15
 """
 
 import sys
@@ -26,7 +14,7 @@ import time
 import logging
 import hashlib
 import requests
-from typing import Dict, List, Tuple, Any
+from typing import Dict, List, Any
 from urllib.parse import urlparse
 from dataclasses import dataclass
 
@@ -84,17 +72,15 @@ class SplashDownloader:
         self.metadata_file = os.path.join(DOWNLOAD_DIR, METADATA_JSON)
         self.splash_items: List[SplashItem] = []
         self.report_data = {
-            "start_time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+            "start_time": "",
             "end_time": "",
-            "execution_time": 0,
+            "execution_time": 0.0,  # 确保这是一个浮点数
             "total_count": 0,
             "success_count": 0,
             "skipped_count": 0,
             "failed_count": 0,
             "errors": []
         }
-        
-        # 确保工作目录存在
         self._ensure_directory()
     
     def _ensure_directory(self) -> None:
@@ -228,6 +214,7 @@ class SplashDownloader:
                 
             # 尝试下载（带重试机制）
             success = False
+            last_error = None
             for attempt in range(1, MAX_RETRIES + 1):
                 try:
                     response = requests.get(
@@ -256,6 +243,7 @@ class SplashDownloader:
                     break
                     
                 except Exception as e:
+                    last_error = e
                     logger.error(f"下载尝试 {attempt}/{MAX_RETRIES} 失败: {item.name} - {str(e)}")
                     if attempt < MAX_RETRIES:
                         time.sleep(RETRY_DELAY)
@@ -263,12 +251,12 @@ class SplashDownloader:
             if not success:
                 logger.error(f"下载失败: {item.name}")
                 item.status = "failed"
-                item.error = str(e)
+                item.error = str(last_error) if last_error else "Unknown error"
                 self.report_data["failed_count"] += 1
                 self.report_data["errors"].append({
                     "id": item.id,
                     "name": item.name,
-                    "error": str(e)
+                    "error": item.error
                 })
     
     def save_metadata(self) -> None:
@@ -307,10 +295,6 @@ class SplashDownloader:
     def save_report(self) -> None:
         """保存下载报告到 JSON 文件"""
         try:
-            end_time = time.time()
-            self.report_data["end_time"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-            self.report_data["execution_time"] = round(end_time - self.report_data["start_time"], 2)
-            
             with open(self.report_file, "w", encoding="utf-8") as f:
                 json.dump(self.report_data, f, ensure_ascii=False, indent=2)
             
@@ -348,7 +332,11 @@ class SplashDownloader:
     
     def run(self) -> int:
         """执行完整下载流程"""
-        start_time = time.time()
+        # 记录开始时间为字符串
+        self.report_data["start_time"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+        
+        # 记录实际开始时间为浮点数（用于计算执行时间）
+        actual_start = time.time()
         
         try:
             # 获取开屏图列表
@@ -359,7 +347,6 @@ class SplashDownloader:
             
             # 保存元数据和报告
             self.save_metadata()
-            self.save_report()
             
             return 0
             
@@ -367,10 +354,13 @@ class SplashDownloader:
             logger.critical(f"运行过程中发生严重错误: {str(e)}", exc_info=True)
             return 1
         finally:
-            # 确保报告时间被正确记录
-            end_time = time.time()
-            self.report_data["execution_time"] = round(end_time - start_time, 2)
+            # 正确计算执行时间
+            actual_end = time.time()
             self.report_data["end_time"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+            self.report_data["execution_time"] = round(actual_end - actual_start, 2)
+            
+            # 保存报告并打印摘要
+            self.save_report()
             self.print_summary()
 
 
