@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Bilibili Wallpaper Girl Downloader - Fixed Version
+Bilibili Wallpaper Girl Downloader - Final Version
 支持 --log-file 参数并修复所有已知问题
 
-Version: 1.3.1
+Version: 1.4.0
 Fixed: 2025-06-15
 """
 
@@ -15,18 +15,10 @@ import math
 import os
 import sys
 import time
-from collections import deque
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 import requests
-
-# 日志格式配置
-log_formatter = logging.Formatter(
-    "[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
-)
 
 # 创建根日志记录器
 root_logger = logging.getLogger()
@@ -34,6 +26,10 @@ root_logger.setLevel(logging.INFO)
 
 # 控制台日志处理
 console_handler = logging.StreamHandler()
+log_formatter = logging.Formatter(
+    "[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
 console_handler.setFormatter(log_formatter)
 root_logger.addHandler(console_handler)
 
@@ -230,8 +226,6 @@ def setup_logging(log_file: str = None, debug: bool = False):
     # 设置根日志级别
     log_level = logging.DEBUG if debug else logging.INFO
     root_logger.setLevel(log_level)
-    
-    # 配置控制台日志
     console_handler.setLevel(log_level)
     
     # 配置文件日志
@@ -247,7 +241,7 @@ def main():
     parser.add_argument("--sessdata", required=True, help="Bilibili session cookie (SESSDATA)")
     parser.add_argument("--output", default="bizhiniang", help="Output directory for images")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
-    parser.add_argument("--log-file", default=None, help="Path to log file")  # 修复的参数
+    parser.add_argument("--log-file", default=None, help="Path to log file")
     args = parser.parse_args()
     
     # 配置日志
