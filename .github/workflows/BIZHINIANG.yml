@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     
-    # 环境变量定义 - 问题通常在这里
+    # 环境变量定义 - 确保正确缩进
     env:
       OUTPUT_DIR: bizhiniang
       REPORT_FILE: wallpapers_report.md
