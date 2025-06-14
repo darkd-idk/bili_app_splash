@@ -18,7 +18,7 @@ jobs:
   sync-wallpapers:
     name: "Synchronize Wallpaper Images"
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     
     env:
       OUTPUT_DIR: 'bizhiniang'
@@ -28,13 +28,16 @@ jobs:
       REPORT_DIR: '.reports'
 
     steps:
+      # 步骤1: 准备环境
       - name: "Configure Environment"
         run: |
           echo "🏁 WORKFLOW STARTED AT: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
           echo "Repository: $GITHUB_REPOSITORY"
           echo "Ref: $GITHUB_REF_NAME"
+          echo "Runner OS: $(uname -a)"
         shell: bash
 
+      # 步骤2: 检出仓库
       - name: "Checkout Repository"
         uses: actions/checkout@v4
         with:
@@ -47,17 +50,20 @@ jobs:
             .github/
           sparse-checkout-cone-mode: false
 
+      # 步骤3: 设置Python环境
       - name: "Setup Python Environment"
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: "pip"
 
+      # 步骤4: 安装依赖
       - name: "Install Dependencies"
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      # 步骤5: 执行下载
       - name: "Download Wallpapers"
         env:
           SESSDATA: "${{ secrets.SESSDATA }}"
@@ -71,19 +77,44 @@ jobs:
           
           echo "🔽 Starting wallpaper download with SESSDATA=${SESSDATA:0:4}..."
           
-          # 使用修复后的脚本
+          # 安装网络诊断工具
+          echo "Installing network diagnostics..."
+          sudo apt-get update
+          sudo apt-get install -y net-tools dnsutils traceroute
+          
+          # 测试网络连接
+          echo "Network connection test:"
+          ping -c 4 api.bilibili.com
+          
+          # 测试DNS解析
+          echo "DNS resolution:"
+          dig api.bilibili.com
+          
+          # 测试API端点访问
+          echo "Testing API endpoint access..."
+          curl -v -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36" \
+          "https://api.bilibili.com/x/dynamic/feed/draw/doc_list?uid=6823116&page_num=1&page_size=1" -o api_test.json
+          
+          # 分析API响应
+          echo "API response:"
+          cat api_test.json
+          
+          # 执行下载脚本
           python "${{ env.SCRIPT_FILE }}" \
             --sessdata "${SESSDATA}" \
             --output "${{ env.OUTPUT_DIR }}" \
-            --log-file wallpapers.log
+            --log-file wallpapers.log \
+            --debug
           
           echo "✅ Download process completed"
         
+      # 步骤6: 准备提交
       - name: "Configure Git Settings"
         run: |
           git config --global user.name "GitHub Actions Bot"
           git config --global user.email "github-actions@users.noreply.github.com"
 
+      # 步骤7: 提交变更
       - name: "Commit Changes"
         run: |
           set -euo pipefail
@@ -101,6 +132,7 @@ jobs:
             echo "🟢 No changes to commit"
           fi
 
+      # 步骤8: 推送变更
       - name: "Push Changes"
         run: |
           set -euo pipefail
@@ -120,6 +152,7 @@ jobs:
           echo "::error::Push failed after $max_retries attempts"
           exit 1
 
+      # 步骤9: 生成报告
       - name: "Generate Wallpaper Report"
         run: |
           set -euo pipefail
@@ -162,6 +195,7 @@ jobs:
           
           echo "📊 Generated report at $report_path"
 
+      # 步骤10: 上传制品
       - name: "Upload Sync Artifacts"
         uses: actions/upload-artifact@v4
         with:
@@ -170,8 +204,10 @@ jobs:
             ${{ env.REPORT_DIR }}/${{ env.REPORT_FILE }}
             ${{ env.URL_LIST_FILE }}
             wallpapers.log
+            api_test.json
           retention-days: 7
 
+      # 步骤11: 最终状态
       - name: "Final Status"
         run: |
           echo "🎉 WALLPAPER SYNC COMPLETED SUCCESSFULLY"
