@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Bilibili Wallpaper Girl Downloader - API Issue Fixed Version
+Bilibili Wallpaper Girl Downloader - Fixed for New API Structure
 
-Version: 1.5.0
+Version: 1.6.0
 Fixed: 2025-06-15
 """
 
@@ -36,13 +36,13 @@ logger = logging.getLogger("BilibiliWallpaper")
 
 # 全局常量
 WALLPAPER_UID = 6823116  # Wallpaper Girl account UID
-API_URL = "https://api.bilibili.com/x/dynamic/feed/draw/doc_list"  # 更新为官方API端点
+API_URL = "https://api.bilibili.com/x/dynamic/feed/draw/doc_list"
 DEFAULT_PAGE_SIZE = 45
 MAX_RETRIES = 5
 RETRY_DELAY = 2  # seconds
 REQUEST_TIMEOUT = 45
 MAX_CONCURRENT_DOWNLOADS = 8
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0"
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 HEADERS = {
     "User-Agent": USER_AGENT,
     "Referer": f"https://space.bilibili.com/{WALLPAPER_UID}/dynamic",
@@ -98,15 +98,12 @@ class WallpaperDownloader:
     def _api_request(self, page: int = 0) -> dict:
         """获取壁纸数据API请求"""
         params = {
-            "uid": WALLPAPER_UID,  # 使用uid参数
+            "uid": WALLPAPER_UID,
             "page_num": page + 1,   # 新API页码从1开始
             "page_size": self.page_size,
-            "biz": "all",           # 获取所有内容
+            "biz": "all",
         }
         cookies = {"SESSDATA": self.sessdata}
-        
-        # 完整记录请求细节用于调试
-        logger.debug(f"API request: {API_URL}?{'&'.join([f'{k}={v}' for k, v in params.items()])}")
         
         for attempt in range(MAX_RETRIES):
             try:
@@ -119,8 +116,8 @@ class WallpaperDownloader:
                 )
                 
                 # 详细记录响应信息
+                logger.debug(f"API request: {response.url}")
                 logger.debug(f"API response status: {response.status_code}")
-                logger.debug(f"API response headers: {response.headers}")
                 
                 response.raise_for_status()
                 
@@ -135,6 +132,7 @@ class WallpaperDownloader:
                 
                 # 验证响应有效性
                 if self._is_valid_response(data):
+                    logger.debug(f"API response valid: {data.get('data', {}).get('items', [])[:1]}")
                     return data
                 else:
                     logger.warning(f"Invalid API response (attempt {attempt+1}/{MAX_RETRIES})")
@@ -199,22 +197,25 @@ class WallpaperDownloader:
             return
         
         # 获取相册元数据
-        upload_time = album_data.get("upload_time") or album_data.get("publish_time", "")
+        upload_time = album_data.get("ctime", "")
         if not upload_time:
             logger.warning("Album missing timestamp, using current time")
             upload_time = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+        else:
+            # 将时间戳转换为日期字符串
+            upload_time = datetime.utcfromtimestamp(upload_time).strftime("%Y%m%d%H%M%S")
         
         # 创建相册目录
-        album_name = upload_time.replace(":", "")
+        album_name = upload_time
         album_path = os.path.join(self.output_dir, album_name)
         os.makedirs(album_path, exist_ok=True)
         
         # 获取所有图片URL
         image_urls = []
-        pictures = album_data.get("pictures") or album_data.get("uploaded_pictures", [])
+        pictures = album_data.get("pictures", [])
         
         for pic in pictures:
-            img_src = pic.get("img_src") or pic.get("url", "")
+            img_src = pic.get("img_src", "")
             if img_src:
                 # 尝试处理相对URL
                 if not img_src.startswith("http"):
@@ -249,23 +250,22 @@ class WallpaperDownloader:
                     self.failed_count += 1
 
     def get_total_albums(self) -> int:
-        """获取相册总数"""
-        api_data = self._api_request()
+        """获取相册总数 - 新API不再提供总数，改为使用分页探测"""
+        # 尝试获取第一页数据
+        api_data = self._api_request(0)
         if not api_data:
             logger.error("API request failed, no data returned")
             return 0
             
-        data = api_data.get("data", {})
-        
-        if "total_count" in data:
-            return data["total_count"]
-        elif "total" in data:
-            return data["total"]
-        elif "page" in data and "total_count" in data["page"]:
-            return data["page"]["total_count"]
-        else:
-            logger.error(f"API response missing 'total_count'. API data: {api_data}")
+        # 检查是否有数据
+        items = api_data.get("data", {}).get("items", [])
+        if not items:
+            logger.error("No albums found in first page")
             return 0
+            
+        # 由于API不返回总数，我们假设有足够的数据需要多页处理
+        # 在实际应用中，我们可以设置一个最大页数
+        return 1000  # 设置一个足够大的值，确保处理所有相册
 
     def run(self) -> None:
         """主执行方法"""
@@ -278,24 +278,23 @@ class WallpaperDownloader:
             return
             
         pages = math.ceil(total_albums / self.page_size)
-        logger.info(f"Found {total_albums} albums across {pages} pages")
+        logger.info(f"Processing up to {pages} pages")
         
         # 处理每一页
         for page in range(pages):
             logger.info(f"Processing page {page+1}/{pages}")
             api_data = self._api_request(page)
             
-            if not api_data or "data" not in api_data or "items" not in api_data["data"]:
-                logger.warning(f"Page {page} returned invalid data, checking alternate fields")
-                # 尝试替代字段
-                items = api_data.get("data", {}).get("cards") or []
-            else:
-                items = api_data["data"]["items"]
+            if not api_data or "data" not in api_data:
+                logger.error(f"Page {page} returned invalid data")
+                continue
                 
+            items = api_data["data"].get("items", [])
+            
             # 跳过没有相册的页面
             if not items:
-                logger.warning(f"Page {page} returned no albums")
-                continue
+                logger.info(f"Page {page+1} returned no albums, stopping")
+                break
                 
             # 处理相册
             for album_data in items:
