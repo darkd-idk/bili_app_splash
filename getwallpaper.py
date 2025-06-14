@@ -1,20 +1,10 @@
 #!/usr/bin/env python3
 """
-Bilibili Wallpaper Girl Downloader
-Automatically downloads images posted by a specific user on Bilibili
+Bilibili Wallpaper Girl Downloader - Fixed Version
+支持 --log-file 参数并修复所有已知问题
 
-Features:
-- Threaded downloading with configurable concurrency
-- Robust error handling and retry mechanisms
-- Progress tracking and detailed logging
-- Support for large-scale downloads
-
-Usage:
-python getwallpaper.py --sessdata YOUR_SESSDATA [--output OUTPUT_DIR]
-
-Author: GitHub Actions Workflow
-Version: 1.3.0
-Last Updated: 2025-06-15
+Version: 1.3.1
+Fixed: 2025-06-15
 """
 
 import argparse
@@ -32,15 +22,24 @@ from urllib.parse import urlparse
 
 import requests
 
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
+# 日志格式配置
+log_formatter = logging.Formatter(
+    "[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
 )
+
+# 创建根日志记录器
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.INFO)
+
+# 控制台日志处理
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(log_formatter)
+root_logger.addHandler(console_handler)
+
 logger = logging.getLogger("BilibiliWallpaper")
 
-# Global constants
+# 全局常量
 WALLPAPER_UID = 6823116  # Wallpaper Girl account UID
 API_URL = "http://api.vc.bilibili.com/link_draw/v1/doc/others"
 DEFAULT_PAGE_SIZE = 45
@@ -67,10 +66,10 @@ class WallpaperDownloader:
         self.album_counts = {}
         self.start_time = time.time()
         
-        # Ensure output directory exists
+        # 确保输出目录存在
         os.makedirs(self.output_dir, exist_ok=True)
         
-        # Initialize URL tracking file
+        # 初始化URL跟踪文件
         with open(URLS_FILE, "w", encoding="utf-8") as f:
             f.write("# Wallpaper URL Record\n")
             f.write(f"# Generated at {datetime.utcnow().isoformat()}Z\n\n")
@@ -226,16 +225,33 @@ class WallpaperDownloader:
             logger.info(f"- Largest album: {latest_album} ({self.album_counts[latest_album]} images)")
         logger.info("=" * 60)
 
+def setup_logging(log_file: str = None, debug: bool = False):
+    """配置日志系统"""
+    # 设置根日志级别
+    log_level = logging.DEBUG if debug else logging.INFO
+    root_logger.setLevel(log_level)
+    
+    # 配置控制台日志
+    console_handler.setLevel(log_level)
+    
+    # 配置文件日志
+    if log_file:
+        file_handler = logging.FileHandler(log_file, mode='w')
+        file_handler.setFormatter(log_formatter)
+        file_handler.setLevel(log_level)
+        root_logger.addHandler(file_handler)
+
 def main():
     """Command line interface"""
     parser = argparse.ArgumentParser(description="Bilibili Wallpaper Girl Downloader")
     parser.add_argument("--sessdata", required=True, help="Bilibili session cookie (SESSDATA)")
     parser.add_argument("--output", default="bizhiniang", help="Output directory for images")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+    parser.add_argument("--log-file", default=None, help="Path to log file")  # 修复的参数
     args = parser.parse_args()
     
-    if args.debug:
-        logger.setLevel(logging.DEBUG)
+    # 配置日志
+    setup_logging(args.log_file, args.debug)
     
     try:
         downloader = WallpaperDownloader(
