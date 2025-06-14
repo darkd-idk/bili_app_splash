@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Bilibili Wallpaper Girl Downloader - Fixed NoneType Error
+Bilibili Wallpaper Girl Downloader - Final Robust Version
 
-Version: 1.6.1
+Version: 1.7.0
 Fixed: 2025-06-15
 """
 
