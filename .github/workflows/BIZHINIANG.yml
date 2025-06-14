@@ -77,27 +77,12 @@ jobs:
           
           echo "🔽 Starting wallpaper download with SESSDATA=${SESSDATA:0:4}..."
           
-          # 安装网络诊断工具
-          echo "Installing network diagnostics..."
-          sudo apt-get update
-          sudo apt-get install -y net-tools dnsutils traceroute
-          
-          # 测试网络连接
+          # 测试网络连通性
           echo "Network connection test:"
-          ping -c 4 api.bilibili.com
-          
-          # 测试DNS解析
-          echo "DNS resolution:"
-          dig api.bilibili.com
-          
-          # 测试API端点访问
-          echo "Testing API endpoint access..."
-          curl -v -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36" \
-          "https://api.bilibili.com/x/dynamic/feed/draw/doc_list?uid=6823116&page_num=1&page_size=1" -o api_test.json
-          
-          # 分析API响应
-          echo "API response:"
-          cat api_test.json
+          curl -s -o /dev/null -w "Google: Status %{http_code} Time: %{time_total}s\n" https://www.google.com
+          curl -s -o /dev/null -w "Baidu: Status %{http_code} Time: %{time_total}s\n" https://www.baidu.com
+          curl -s -o /dev/null -w "Bilibili: Status %{http_code} Time: %{time_total}s\n" https://www.bilibili.com
+          curl -s -o /dev/null -w "Bing: Status %{http_code} Time: %{time_total}s\n" https://www.bing.com
           
           # 执行下载脚本
           python "${{ env.SCRIPT_FILE }}" \
@@ -161,7 +146,7 @@ jobs:
           
           log_summary=""
           if [ -f wallpapers.log ]; then
-            log_summary=$(tail -n 20 wallpapers.log)
+            log_summary=$(tail -n 30 wallpapers.log)
           else
             log_summary="No log file available"
           fi
@@ -204,7 +189,6 @@ jobs:
             ${{ env.REPORT_DIR }}/${{ env.REPORT_FILE }}
             ${{ env.URL_LIST_FILE }}
             wallpapers.log
-            api_test.json
           retention-days: 7
 
       # 步骤11: 最终状态
