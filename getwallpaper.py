@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
 """
 Bilibili Wallpaper Girl Downloader - Final Version
-支持 --log-file 参数并修复所有已知问题
+修复了所有类型注解问题
 
-Version: 1.4.0
+Version: 1.4.1
 Fixed: 2025-06-15
 """
 
 import argparse
 import concurrent.futures
-import json
 import logging
 import math
 import os
 import sys
 import time
 from datetime import datetime
+from typing import Dict, Any, List  # 添加缺失的类型导入
 from urllib.parse import urlparse
 
 import requests
@@ -59,7 +59,7 @@ class WallpaperDownloader:
         self.downloaded_count = 0
         self.skipped_count = 0
         self.failed_count = 0
-        self.album_counts = {}
+        self.album_counts: Dict[str, int] = {}  # 添加类型注解
         self.start_time = time.time()
         
         # 确保输出目录存在
@@ -72,7 +72,7 @@ class WallpaperDownloader:
         
         logger.info(f"Initialized Wallpaper Downloader (Output: {self.output_dir})")
 
-    def _api_request(self, page: int = 0) -> Dict:
+    def _api_request(self, page: int = 0) -> Dict[str, Any]:  # 修复类型注解
         """Make API request to get wallpaper data"""
         params = {
             "biz": 0,
@@ -96,7 +96,7 @@ class WallpaperDownloader:
             except requests.RequestException as e:
                 logger.warning(f"API request failed (attempt {attempt+1}/{MAX_RETRIES}): {e}")
                 time.sleep(RETRY_DELAY * (attempt + 1))
-        return None
+        return {}
 
     def _download_image(self, url: str, album_path: str) -> None:
         """Download a single image"""
@@ -133,7 +133,7 @@ class WallpaperDownloader:
         self.failed_count += 1
         logger.error(f"Failed to download: {url}")
 
-    def _process_album(self, album_data: Dict) -> None:
+    def _process_album(self, album_data: Dict[str, Any]) -> None:  # 添加类型注解
         """Process an album of images"""
         if not album_data or "upload_time" not in album_data or "pictures" not in album_data:
             logger.warning("Invalid album data, skipping")
@@ -144,7 +144,10 @@ class WallpaperDownloader:
         album_path = os.path.join(self.output_dir, album_name)
         os.makedirs(album_path, exist_ok=True)
         
-        image_urls = [pic["img_src"] for pic in album_data["pictures"] if "img_src" in pic]
+        # 安全获取图片URL列表
+        image_urls = []
+        if "pictures" in album_data:
+            image_urls = [pic["img_src"] for pic in album_data["pictures"] if "img_src" in pic]
         
         # Track album stats
         self.album_counts[album_name] = len(image_urls)
@@ -222,13 +225,13 @@ class WallpaperDownloader:
         logger.info("=" * 60)
 
 def setup_logging(log_file: str = None, debug: bool = False):
-    """配置日志系统"""
-    # 设置根日志级别
+    """Configure logging system"""
+    # Set root log level
     log_level = logging.DEBUG if debug else logging.INFO
     root_logger.setLevel(log_level)
     console_handler.setLevel(log_level)
     
-    # 配置文件日志
+    # Configure file logging
     if log_file:
         file_handler = logging.FileHandler(log_file, mode='w')
         file_handler.setFormatter(log_formatter)
@@ -244,7 +247,7 @@ def main():
     parser.add_argument("--log-file", default=None, help="Path to log file")
     args = parser.parse_args()
     
-    # 配置日志
+    # Configure logging
     setup_logging(args.log_file, args.debug)
     
     try:
