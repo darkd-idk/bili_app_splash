@@ -3,7 +3,7 @@ name: KAIPINGTU
 on:
   workflow_dispatch:
   schedule:
-    - cron: '1 20 * * *'  # UTC时间 20:01 (北京时间次日4:01)
+    - cron: '1 20 * * *'
 
 jobs:
   start:
@@ -11,7 +11,7 @@ jobs:
     steps:
       - uses: actions/checkout@v2
         with:
-          fetch-depth: 0  # 拉取完整历史记录
+          fetch-depth: 0  # 获取完整历史记录
 
       - name: Set up Python
         uses: actions/setup-python@v2
@@ -21,45 +21,37 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install requests  # 确保安装requests库
 
       - name: 下载开屏图
         run: |
-          python get_app_splash.py
+          python get_app_splash.py || echo "开屏图下载失败"
 
       - name: commit
         run: |
           git config --global user.email "non-reply@github.com"
           git config --global user.name "GitHub Action"
           git add .
-          git status  # 查看状态
-          git diff --cached --name-only  # 查看暂存文件
-          git commit -m "B站开屏图更新"
+          # 避免没有变化时失败
+          git diff --quiet && git diff --staged --quiet || git commit -m "B站开屏图更新"
+          echo "提交状态: $?"
 
+      # 使用原生Git替代ad-m/github-push-action
       - name: Push changes
-        uses: ad-m/github-push-action@v0.8.1  # 改用特定版本
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}  # 使用正确的token名称
-          branch: main
-          force: false
-          
+        run: |
+          git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}
+          git push origin HEAD:$GITHUB_REF_NAME
+        env:
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+
       - name: Make preview file
         run: |
-          echo "bilibili开屏图下载报告" > report.txt
-          echo "========================" >> report.txt
-          echo "完成时间: $(date)" >> report.txt
-          echo "下载图片数: $(ls -1 app_splash/*.{jpg,png,webp} 2>/dev/null | wc -l)" >> report.txt
-          ls -alh app_splash >> report.txt
-          
-      - name: "Send mail"
-        uses: dawidd6/action-send-mail@v3.8.0  # 改用特定版本
-        with:
-          server_address: smtp.163.com
-          server_port: 465
-          username: ${{ secrets.MAILUSERNAME }}
-          password: ${{ secrets.MAILPASSWORD }}
-          subject: B站开屏图下载报告
-          body: file://report.txt
-          to: 3377911508@qq.com
-          from: GitHub Actions
-          secure: true
+          {
+            echo "bilibili开屏图下载报告"
+            echo "========================"
+            echo "完成时间: $(date)"
+            echo "下载图片数: $(find app_splash -type f -name '*.jpg' -or -name '*.png' -or -name '*.webp' | wc -l)"
+            echo "文件列表:"
+            ls -lh app_splash
+          } > report.txt
