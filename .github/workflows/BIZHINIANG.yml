@@ -129,7 +129,7 @@ jobs:
           echo "::error::Push failed after $max_retries attempts"
           exit 1
 
-      # 步骤9: 生成报告
+      # 步骤9: 生成报告 (修复后的版本)
       - name: "Generate Wallpaper Report"
         run: |
           set -euo pipefail
@@ -154,15 +154,48 @@ jobs:
             file_count=$(find "${{ env.OUTPUT_DIR }}" -type f | wc -l)
           fi
           
-          # 生成Markdown报告
+          # 生成时间戳
+          sync_time=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
+          
+          # 生成Markdown报告 - 不再使用问题行
           report_path="${{ env.REPORT_DIR }}/${{ env.REPORT_FILE }}"
-          cat << "EOF" > "$report_path"
-# Wallpaper Sync Report
+          
+          # 安全生成报告内容
+          {
+            echo "# Wallpaper Sync Report"
+            echo ""
+            echo "- **Sync Time**: $sync_time"
+            echo "- **Workflow Run**: [$GITHUB_RUN_ID](https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)"
+            echo "- **Output Directory**: ${{ env.OUTPUT_DIR }}"
+            echo "- **Album Count**: $album_count"
+            echo "- **Image Count**: $file_count"
+            echo ""
+            echo "## Log Summary"
+            echo "\`\`\`"
+            echo "$log_summary"
+            echo "\`\`\`"
+          } > "$report_path"
+          
+          echo "📊 Generated report at $report_path"
 
-- **Sync Time**: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
-- **Workflow Run**: [$GITHUB_RUN_ID](https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)
-- **Output Directory**: ${{ env.OUTPUT_DIR }}
-- **Album Count**: $album_count
-- **Image Count**: $file_count
+      # 步骤10: 上传制品
+      - name: "Upload Sync Artifacts"
+        uses: actions/upload-artifact@v4
+        with:
+          name: "wallpaper-sync-artifacts-${{ github.run_id }}"
+          path: |
+            ${{ env.REPORT_DIR }}/${{ env.REPORT_FILE }}
+            ${{ env.URL_LIST_FILE }}
+            wallpapers.log
+          retention-days: 7
 
-## Log Summary
+      # 步骤11: 最终状态
+      - name: "Final Status"
+        run: |
+          echo "🎉 WALLPAPER SYNC COMPLETED SUCCESSFULLY"
+          echo "========================================"
+          echo "Timestamp: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo "Workflow: $GITHUB_WORKFLOW"
+          echo "Run ID: $GITHUB_RUN_ID"
+          echo "Repository: $GITHUB_REPOSITORY"
+          echo "Output Directory: ${{ env.OUTPUT_DIR }}"
