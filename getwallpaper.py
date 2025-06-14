@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Bilibili Wallpaper Girl Downloader - Final Robust Version
+Bilibili Wallpaper Girl Downloader - Proxy Enabled Version
 
-Version: 1.7.0
+Version: 1.8.0
 Fixed: 2025-06-15
 """
 
@@ -16,6 +16,7 @@ import sys
 import time
 from datetime import datetime
 from urllib.parse import urlparse
+import random
 
 import requests
 
@@ -38,10 +39,10 @@ logger = logging.getLogger("BilibiliWallpaper")
 WALLPAPER_UID = 6823116  # Wallpaper Girl account UID
 API_URL = "https://api.bilibili.com/x/dynamic/feed/draw/doc_list"
 DEFAULT_PAGE_SIZE = 45
-MAX_RETRIES = 5
-RETRY_DELAY = 2  # seconds
-REQUEST_TIMEOUT = 45
-MAX_CONCURRENT_DOWNLOADS = 8
+MAX_RETRIES = 7  # 增加重试次数
+RETRY_DELAY = 3  # seconds
+REQUEST_TIMEOUT = 60  # 增加超时时间
+MAX_CONCURRENT_DOWNLOADS = 6  # 降低并发数以避免被封
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 HEADERS = {
     "User-Agent": USER_AGENT,
@@ -56,6 +57,15 @@ HEADERS = {
     "Sec-Fetch-Site": "same-site",
 }
 URLS_FILE = "urls.txt"
+
+# 公共代理服务器列表 (请定期更新此列表)
+PUBLIC_PROXIES = [
+    "https://www.bing.com/",
+    "https://duckduckgo.com/",
+    "https://searx.be/",
+    "https://www.qwant.com/",
+    "https://search.brave.com/"
+]
 
 class WallpaperDownloader:
     def __init__(self, sessdata: str, output_dir: str = "bizhiniang", page_size: int = DEFAULT_PAGE_SIZE):
@@ -96,7 +106,7 @@ class WallpaperDownloader:
         return True
 
     def _api_request(self, page: int = 0) -> dict:
-        """获取壁纸数据API请求"""
+        """获取壁纸数据API请求 - 支持代理"""
         params = {
             "uid": WALLPAPER_UID,
             "page_num": page + 1,   # 新API页码从1开始
@@ -107,6 +117,13 @@ class WallpaperDownloader:
         
         for attempt in range(MAX_RETRIES):
             try:
+                # 使用随机代理
+                if attempt > 1:
+                    proxy = {"https": random.choice(PUBLIC_PROXIES)}
+                    logger.warning(f"Using proxy for API request: {proxy['https']}")
+                else:
+                    proxy = None
+                
                 logger.debug(f"Attempting API request (page {page + 1}, attempt {attempt + 1}/{MAX_RETRIES})")
                 response = requests.get(
                     API_URL,
@@ -114,6 +131,7 @@ class WallpaperDownloader:
                     headers=HEADERS,
                     cookies=cookies,
                     timeout=REQUEST_TIMEOUT,
+                    proxies=proxy
                 )
                 
                 # 记录请求详情
@@ -156,13 +174,15 @@ class WallpaperDownloader:
                 logger.error(f"Unexpected error during API request: {str(e)}")
             
             # 等待后重试
-            time.sleep(RETRY_DELAY * (attempt + 1))
+            wait_time = RETRY_DELAY * (attempt + 1) + random.uniform(0, 2)
+            logger.debug(f"Retrying in {wait_time:.1f} seconds")
+            time.sleep(wait_time)
         
         logger.error("Failed to get valid API response after multiple attempts")
         return {}
 
     def _download_image(self, url: str, album_path: str) -> None:
-        """下载单张图片"""
+        """下载单张图片 - 支持代理"""
         image_name = os.path.basename(urlparse(url).path)
         save_path = os.path.join(album_path, image_name)
         
@@ -175,11 +195,19 @@ class WallpaperDownloader:
         # 下载图片
         for attempt in range(MAX_RETRIES):
             try:
+                # 随机选择代理
+                if attempt > 1:
+                    proxy = {"https": random.choice(PUBLIC_PROXIES)}
+                    logger.info(f"Using proxy for download: {proxy['https']}")
+                else:
+                    proxy = None
+                
                 response = requests.get(
                     url,
                     headers=HEADERS,
                     timeout=REQUEST_TIMEOUT,
-                    stream=True  # 使用流式下载节省内存
+                    stream=True,  # 使用流式下载节省内存
+                    proxies=proxy
                 )
                 response.raise_for_status()
                 
@@ -198,7 +226,9 @@ class WallpaperDownloader:
                 return
             except Exception as e:
                 logger.warning(f"Download failed (attempt {attempt+1}/{MAX_RETRIES}): {url} - {e}")
-                time.sleep(RETRY_DELAY * (attempt + 1))
+                # 随机等待时间避免被封
+                wait_time = RETRY_DELAY * (attempt + 1) * random.uniform(0.5, 1.5)
+                time.sleep(wait_time)
         
         self.failed_count += 1
         logger.error(f"Failed to download: {url}")
@@ -257,10 +287,11 @@ class WallpaperDownloader:
             
         logger.info(f"Processing album: {album_name} ({len(image_urls)} images)")
         
-        # 使用线程池处理图片
+        # 使用线程池处理图片 - 减少并发数避免被封
+        concurrency = min(MAX_CONCURRENT_DOWNLOADS, max(1, len(image_urls) // 2))
         if image_urls:
             with concurrent.futures.ThreadPoolExecutor(
-                max_workers=min(MAX_CONCURRENT_DOWNLOADS, len(image_urls))
+                max_workers=concurrency
             ) as executor:
                 futures = []
                 for url in image_urls:
@@ -326,8 +357,10 @@ class WallpaperDownloader:
             for album_data in items:
                 self._process_album(album_data)
             
-            # 限制请求频率
-            time.sleep(1)
+            # 限制请求频率 - 随机延迟避免被封
+            delay = random.uniform(1.0, 3.0)
+            logger.info(f"Waiting {delay:.1f} seconds before next page")
+            time.sleep(delay)
         
         # 生成最终报告
         elapsed = time.time() - self.start_time
