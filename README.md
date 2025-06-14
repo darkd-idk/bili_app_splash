@@ -129,9 +129,9 @@ bili_app_splash/
 
 | 指标 | 值 |
 |------|-----|
-| 最新同步时间 | ![Last Sync](https://img.shields.io/badge/dynamic/json?label=时间&query=$.last_sync&url=https%3A%2F%2Fraw.githubusercontent.com%2Fzjkwdy%2Fbili_app_splash%2Fmain%2F.stats.json) |
-| 相册数量 | ![Album Count](https://img.shields.io/badge/dynamic/json?label=数量&query=$.album_count&url=https%3A%2F%2Fraw.githubusercontent.com%2Fzjkwdy%2Fbili_app_splash%2Fmain%2F.stats.json) |
-| 图片总数 | ![Image Count](https://img.shields.io/badge/dynamic/json?label=总量&query=$.total_images&url=https%3A%2F%2Fraw.githubusercontent.com%2Fzjkwdy%2Fbili_app_splash%2Fmain%2F.stats.json) |
+| 最新同步时间 | ![Last Sync](https://img.shields.io/badge/dynamic/json?label=时间&query=$.last_sync&url=https%3A%2F%2Fraw.githubusercontent.com%2Fdarkd-idk%2Fbili_app_splash%2Fmain%2F.stats.json) |
+| 相册数量 | ![Album Count](https://img.shields.io/badge/dynamic/json?label=数量&query=$.album_count&url=https%3A%2F%2Fraw.githubusercontent.com%2Fdarkd-idk%2Fbili_app_splash%2Fmain%2F.stats.json) |
+| 图片总数 | ![Image Count](https://img.shields.io/badge/dynamic/json?label=总量&query=$.total_images&url=https%3A%2F%2Fraw.githubusercontent.com%2Fdarkd-idk%2Fbili_app_splash%2Fmain%2F.stats.json) |
 
 > 统计数据每小时更新一次  
 > 最后更新日期：2025-06-15
