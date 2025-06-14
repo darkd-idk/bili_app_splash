@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Bilibili Wallpaper Girl Downloader - Optimized and Fixed Version
+Bilibili Wallpaper Girl Downloader - API Issue Fixed Version
 
-Version: 1.4.2
+Version: 1.5.0
 Fixed: 2025-06-15
 """
 
@@ -36,19 +36,24 @@ logger = logging.getLogger("BilibiliWallpaper")
 
 # 全局常量
 WALLPAPER_UID = 6823116  # Wallpaper Girl account UID
-API_URL = "https://api.vc.bilibili.com/link_draw/v1/doc/others"
+API_URL = "https://api.bilibili.com/x/dynamic/feed/draw/doc_list"  # 更新为官方API端点
 DEFAULT_PAGE_SIZE = 45
-MAX_RETRIES = 5  # 增加重试次数
+MAX_RETRIES = 5
 RETRY_DELAY = 2  # seconds
-REQUEST_TIMEOUT = 45  # 增加超时时间
-MAX_CONCURRENT_DOWNLOADS = 8  # 防止限流
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+REQUEST_TIMEOUT = 45
+MAX_CONCURRENT_DOWNLOADS = 8
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0"
 HEADERS = {
     "User-Agent": USER_AGENT,
-    "Referer": "https://www.bilibili.com/",
-    "Accept": "application/json",
-    "Origin": "https://www.bilibili.com",
+    "Referer": f"https://space.bilibili.com/{WALLPAPER_UID}/dynamic",
+    "Origin": "https://space.bilibili.com",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6",
+    "Connection": "keep-alive",
     "DNT": "1",
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-site",
 }
 URLS_FILE = "urls.txt"
 
@@ -93,12 +98,15 @@ class WallpaperDownloader:
     def _api_request(self, page: int = 0) -> dict:
         """获取壁纸数据API请求"""
         params = {
-            "biz": 0,
-            "poster_uid": WALLPAPER_UID,
-            "page_num": page,
+            "uid": WALLPAPER_UID,  # 使用uid参数
+            "page_num": page + 1,   # 新API页码从1开始
             "page_size": self.page_size,
+            "biz": "all",           # 获取所有内容
         }
         cookies = {"SESSDATA": self.sessdata}
+        
+        # 完整记录请求细节用于调试
+        logger.debug(f"API request: {API_URL}?{'&'.join([f'{k}={v}' for k, v in params.items()])}")
         
         for attempt in range(MAX_RETRIES):
             try:
@@ -109,26 +117,32 @@ class WallpaperDownloader:
                     cookies=cookies,
                     timeout=REQUEST_TIMEOUT,
                 )
+                
+                # 详细记录响应信息
+                logger.debug(f"API response status: {response.status_code}")
+                logger.debug(f"API response headers: {response.headers}")
+                
                 response.raise_for_status()
                 
-                # 检查响应内容是否为JSON
-                if "application/json" not in response.headers.get("Content-Type", ""):
-                    logger.warning(f"API response is not JSON (attempt {attempt+1}/{MAX_RETRIES})")
+                # 尝试解析JSON响应
+                try:
+                    data = response.json()
+                except json.JSONDecodeError:
+                    # 记录非JSON响应内容
+                    content_sample = response.text[:100] if response.text else ""
+                    logger.error(f"Response is not valid JSON: {content_sample}")
                     continue
-                
-                data = response.json()
                 
                 # 验证响应有效性
                 if self._is_valid_response(data):
                     return data
                 else:
                     logger.warning(f"Invalid API response (attempt {attempt+1}/{MAX_RETRIES})")
+                    logger.debug(f"Response data: {data}")
                 
             except requests.RequestException as e:
                 status_code = getattr(e.response, 'status_code', None) if e.response else None
                 logger.warning(f"API request failed (attempt {attempt+1}/{MAX_RETRIES}): {e} (Status: {status_code})")
-            except json.JSONDecodeError:
-                logger.warning(f"Failed to parse JSON response (attempt {attempt+1}/{MAX_RETRIES})")
             
             # 等待后重试
             time.sleep(RETRY_DELAY * (attempt + 1))
@@ -180,20 +194,32 @@ class WallpaperDownloader:
 
     def _process_album(self, album_data: dict) -> None:
         """处理相册中的图片"""
-        if not album_data or "upload_time" not in album_data or "pictures" not in album_data:
-            logger.warning("Invalid album data, skipping")
+        if not album_data:
+            logger.warning("Album data is empty, skipping")
             return
         
+        # 获取相册元数据
+        upload_time = album_data.get("upload_time") or album_data.get("publish_time", "")
+        if not upload_time:
+            logger.warning("Album missing timestamp, using current time")
+            upload_time = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+        
         # 创建相册目录
-        album_name = album_data["upload_time"].replace(":", "")
+        album_name = upload_time.replace(":", "")
         album_path = os.path.join(self.output_dir, album_name)
         os.makedirs(album_path, exist_ok=True)
         
         # 获取所有图片URL
         image_urls = []
-        for pic in album_data["pictures"]:
-            if pic.get("img_src"):
-                image_urls.append(pic["img_src"])
+        pictures = album_data.get("pictures") or album_data.get("uploaded_pictures", [])
+        
+        for pic in pictures:
+            img_src = pic.get("img_src") or pic.get("url", "")
+            if img_src:
+                # 尝试处理相对URL
+                if not img_src.startswith("http"):
+                    img_src = f"https://i0.hdslb.com/{img_src}"
+                image_urls.append(img_src)
         
         # 记录相册统计
         self.album_counts[album_name] = len(image_urls)
@@ -229,11 +255,17 @@ class WallpaperDownloader:
             logger.error("API request failed, no data returned")
             return 0
             
-        if "data" not in api_data or "total_count" not in api_data["data"]:
+        data = api_data.get("data", {})
+        
+        if "total_count" in data:
+            return data["total_count"]
+        elif "total" in data:
+            return data["total"]
+        elif "page" in data and "total_count" in data["page"]:
+            return data["page"]["total_count"]
+        else:
             logger.error(f"API response missing 'total_count'. API data: {api_data}")
             return 0
-            
-        return api_data["data"]["total_count"]
 
     def run(self) -> None:
         """主执行方法"""
@@ -254,11 +286,19 @@ class WallpaperDownloader:
             api_data = self._api_request(page)
             
             if not api_data or "data" not in api_data or "items" not in api_data["data"]:
-                logger.error(f"Page {page} returned invalid data")
+                logger.warning(f"Page {page} returned invalid data, checking alternate fields")
+                # 尝试替代字段
+                items = api_data.get("data", {}).get("cards") or []
+            else:
+                items = api_data["data"]["items"]
+                
+            # 跳过没有相册的页面
+            if not items:
+                logger.warning(f"Page {page} returned no albums")
                 continue
                 
             # 处理相册
-            for album_data in api_data["data"]["items"]:
+            for album_data in items:
                 self._process_album(album_data)
             
             # 限制请求频率
