@@ -1,9 +1,15 @@
-name: Bilibili Wallpaper Girl Sync
+name: Wallpaper Girl Sync
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: '10 1 * * *'  # UTC时间01:10 (北京时间09:10)
+    - cron: '10 1 * * *'  # UTC 01:10 (北京 09:10)
+  
+  # 防止自触发循环
+  push:
+    paths-ignore:
+      - 'bizhiniang/**'
+      - 'urls.txt'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -11,129 +17,193 @@ concurrency:
 
 jobs:
   sync-wallpapers:
-    name: Sync Bilibili Wallpapers
+    name: Synchronize Wallpaper Images
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     env:
       OUTPUT_DIR: bizhiniang
-      REPORT_FILE: wallpaper_report.md
-    
+      REPORT_FILE: wallpapers_report.md
+      URL_LIST_FILE: urls.txt
+      SCRIPT_FILE: getwallpaper.py
+
     steps:
+      # 步骤1: 准备环境
+      - name: Configure Environment
+        run: |
+          echo "GITHUB_REPOSITORY: $GITHUB_REPOSITORY"
+          echo "GITHUB_RUN_ID: $GITHUB_RUN_ID"
+          echo "RUNNER_OS: $RUNNER_OS"
+        shell: bash
+
+      # 步骤2: 检出仓库（稀疏检出）
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
           sparse-checkout: |
-            getwallpaper.py
+            ${{ env.SCRIPT_FILE }}
             requirements.txt
             ${{ env.OUTPUT_DIR }}/
+            .github/
           sparse-checkout-cone-mode: false
+          persist-credentials: true
 
+      # 步骤3: 设置Python环境
       - name: Setup Python Environment
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: 'pip'
 
-      - name: Install Python Dependencies
+      # 步骤4: 安装依赖
+      - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
+          pip cache purge
           pip install -r requirements.txt
 
-      - name: Run Wallpaper Downloader
+      # 步骤5: 执行下载
+      - name: Download Wallpapers
         env:
           SESSDATA: ${{ secrets.SESSDATA }}
         run: |
           set -euo pipefail
           
-          # Validate environment variables
+          # 验证环境变量
           if [ -z "${SESSDATA}" ]; then
-            echo "::error::Missing required SESSDATA environment variable"
+            echo "::error::Missing SESSDATA environment variable"
             exit 1
           fi
           
-          echo "Starting wallpaper download process..."
-          python getwallpaper.py --sessdata "${SESSDATA}" --output "${{ env.OUTPUT_DIR }}" || {
-            echo "::warning::Wallpaper download encountered errors, but workflow will continue"
-          }
-
-      - name: Configure Git
+          echo "Starting wallpaper download..."
+          python ${{ env.SCRIPT_FILE }} \
+            --sessdata "${SESSDATA}" \
+            --output "${{ env.OUTPUT_DIR }}" \
+            --log-file wallpaper.log \
+            || echo "::warning::Download completed with warnings"
+          
+          echo "Completed download process"
+        
+      # 步骤6: 准备提交
+      - name: Configure Git Settings
         run: |
-          git config --global user.email "non-reply@github.com"
-          git config --global user.name "GitHub Actions"
+          git config --global user.name "GitHub Actions Bot"
+          git config --global user.email "github-actions@users.noreply.github.com"
+          git config --global pull.rebase false
+          git config --global http.postBuffer 157286400  # 150MB buffer for large repos
 
+      # 步骤7: 提交变更
       - name: Commit Changes
         run: |
           set -euo pipefail
           
-          # Check if any files have been modified/added
-          if [ -n "$(git status --porcelain)" ]; then
-            echo "Detected changes, committing..."
-            git add "${{ env.OUTPUT_DIR }}/" urls.txt
-            git commit -m "🖼️ Automated wallpaper update [skip ci]"
+          # 检查变更
+          git status --short
+          
+          # 仅添加下载目录和URL列表
+          git add "${{ env.OUTPUT_DIR }}"
+          git add "${{ env.URL_LIST_FILE }}"
+          
+          if ! git diff-index --quiet HEAD --; then
+            echo "Changes detected, committing..."
+            git commit -m "🖼️ Automated wallpaper sync [skip ci]"
+            echo "Changes committed"
           else
             echo "No changes to commit"
           fi
 
+      # 步骤8: 推送变更
       - name: Push Changes
         run: |
           set -euo pipefail
           
-          # Configure remote URL with token
-          git remote set-url origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/$GITHUB_REPOSITORY"
+          # 安全推送配置
+          git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/$GITHUB_REPOSITORY
           
-          # Push changes
-          if git push origin "HEAD:$GITHUB_REF_NAME"; then
-            echo "Push completed successfully"
-          else
-            echo "::error::Failed to push changes"
-            exit 1
-          fi
+          # 限速推送 (300KB/s)
+          git config --global http.lowSpeedLimit 300
+          git config --global http.lowSpeedTime 60
+          
+          # 重试逻辑
+          retry_count=0
+          max_retries=3
+          
+          while [ $retry_count -lt $max_retries ]; do
+            if git push origin HEAD:$GITHUB_REF_NAME; then
+              echo "Push successful"
+              exit 0
+            else
+              retry_count=$((retry_count + 1))
+              echo "Push failed, retry $retry_count/$max_retries in 10 seconds"
+              sleep 10
+            fi
+          done
+          
+          echo "::error::Push failed after $max_retries attempts"
+          exit 1
+        env:
+          GITHUB_REF_NAME: ${{ github.ref_name }}
 
-      - name: Generate Sync Report
+      # 步骤9: 生成报告
+      - name: Generate Wallpaper Report
         run: |
           set -euo pipefail
           
-          {
-            echo "# Wallpaper Sync Report"
-            echo ""
-            echo "## Execution Details"
-            echo "- **Sync Time**: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
-            echo "- **Workflow Run**: [$GITHUB_RUN_ID](https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)"
-            echo ""
-            
-            # Calculate directory sizes and counts
-            if [ -d "${{ env.OUTPUT_DIR }}" ]; then
-              album_count=$(find "${{ env.OUTPUT_DIR }}" -mindepth 1 -maxdepth 1 -type d | wc -l)
-              image_count=$(find "${{ env.OUTPUT_DIR }}" -type f | wc -l)
-              
-              echo "## Storage Summary"
-              echo "- **Album Directories**: $album_count"
-              echo "- **Image Files**: $image_count"
-              echo "- **Latest Album**: $(ls -t "${{ env.OUTPUT_DIR }}" | head -n 1)"
-            else
-              echo "## ⚠️ Warning"
-              echo "Output directory not found!"
-            fi
-            
-            echo ""
-            echo "## Repository Status"
-            echo "```"
-            git status --short
-            echo "```"
-          } > "${{ env.REPORT_FILE }}"
-
-      - name: Upload Report Artifact
+          # 计算统计信息
+          album_count=0
+          file_count=0
+          
+          if [ -d "${{ env.OUTPUT_DIR }}" ]; then
+            album_count=$(find "${{ env.OUTPUT_DIR }}" -mindepth 1 -maxdepth 1 -type d | wc -l)
+            file_count=$(find "${{ env.OUTPUT_DIR }}" -type f | wc -l)
+          fi
+          
+          # 生成 Markdown 报告
+          cat > "${{ env.REPORT_FILE }}" << EOF
+          # Wallpaper Sync Report
+          
+          ## Summary
+          | Metric | Value |
+          |---|---|
+          | **Sync Time** | $(date -u '+%Y-%m-%d %H:%M:%S UTC') |
+          | **Workflow Run** | [Link](https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID) |
+          | **Output Directory** | ${{ env.OUTPUT_DIR }} |
+          | **Album Count** | $album_count |
+          | **Image Count** | $file_count |
+          | **Git Reference** | ${{ github.ref_name }} |
+          
+          ## Latest Albums
+          \`\`\`
+          $(ls -lt "${{ env.OUTPUT_DIR }}" | head -n 6)
+          \`\`\`
+          
+          ## URL Statistics
+          \`\`\`
+          $(wc -l < "${{ env.URL_LIST_FILE }}" | xargs) URLs recorded
+          \`\`\`
+          EOF
+          
+          echo "Generated report at ${{ env.REPORT_FILE }}"
+          
+      # 步骤10: 上传制品
+      - name: Upload Sync Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: wallpaper-report
+          name: wallpaper-sync-artifacts
           path: |
             ${{ env.REPORT_FILE }}
-            urls.txt
-          retention-days: 7
+            ${{ env.URL_LIST_FILE }}
+            wallpaper.log
+          retention-days: 14
+          if-no-files-found: warn
           
+      # 步骤11: 最终状态报告
       - name: Final Status
         run: |
-          if [ -f "${{ env.REPORT_FILE }}" ]; then
-            cat "${{ env.REPORT_FILE }}"
-          fi
-          echo "🚀 Wallpaper sync completed successfully"
+          echo "========== WALLPAPER SYNC COMPLETE =========="
+          echo "Timestamp: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo "Workflow: $GITHUB_WORKFLOW"
+          echo "Run ID: $GITHUB_RUN_ID"
+          echo "Repository: $GITHUB_REPOSITORY"
+          echo "Result: ✅ Success"
+          echo "============================================="
