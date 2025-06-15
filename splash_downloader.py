@@ -2,15 +2,16 @@
 """
 Bilibili Splash Image Downloader (Stable Version)
 
-Version: 1.0.0
+Version: 1.1.0
 Updated: 2025-06-15
+Fixes: API response structure handling
 """
 
 import argparse
 import hashlib
 import json
 import logging
-import os
+import re
 import time
 from datetime import datetime
 from pathlib import Path
@@ -135,8 +136,27 @@ class SplashDownloader:
                     logger.error(f"API error: {error_msg}")
                     return None
                     
-                # 获取开屏图列表
-                splash_list = data.get('data', [])
+                # 获取开屏图列表 - 处理不同的API响应结构
+                splash_list = []
+                
+                # 情况1: 包含多个数组
+                if data.get('data') and isinstance(data['data'], list) and len(data['data']) > 0:
+                    # API返回了多个数组 - 如 ["summer", "spring", ...]
+                    for sublist in data['data']:
+                        if isinstance(sublist, list):
+                            splash_list.extend(sublist)
+                        else:
+                            splash_list.append(sublist)
+                # 情况2: 直接是列表
+                elif data.get('data') and isinstance(data['data'], list):
+                    splash_list = data['data']
+                # 情况3: 字典中嵌套列表
+                elif data.get('data') and isinstance(data['data'], dict):
+                    splash_list = list(data['data'].values())[0]
+                # 情况4: 其他结构
+                else:
+                    logger.warning("No splash list found in expected locations")
+                    return None
                 
                 if not splash_list:
                     logger.warning("No splash images in API response")
@@ -147,11 +167,43 @@ class SplashDownloader:
                 
             except json.JSONDecodeError as e:
                 logger.error(f"JSON parsing failed: {str(e)}")
-                logger.error(f"Response content: {response.text[:500]}...")
+                logger.debug(f"Response content: {response.text[:500]}...")
                 return None
                 
         except requests.RequestException as e:
             logger.error(f"Request failed: {str(e)}")
+            return None
+    
+    def _parse_image_url(self, item):
+        """从API项中解析图片URL - 处理多种数据结构"""
+        # 情况1: 项目直接是字符串格式的URL
+        if isinstance(item, str):
+            # 检查字符串是否符合URL格式
+            if re.match(r'^https?://[^\s/$.?#].[^\s]*$', item):
+                return item
+            else:
+                logger.warning(f"Item is string but not a valid URL: {item}")
+                return None
+        
+        # 情况2: 项目是字典格式
+        elif isinstance(item, dict):
+            # 尝试多个可能的字段名
+            url_fields = ['thumb', 'image', 'url', 'img_url', 'source']
+            for field in url_fields:
+                if item.get(field):
+                    return item[field]
+            
+            # 检查嵌套结构
+            if item.get('resources') and isinstance(item['resources'], dict):
+                if item['resources'].get('image'):
+                    return item['resources']['image']
+            
+            logger.warning(f"No image URL found in item: {item}")
+            return None
+        
+        # 情况3: 其他无法处理的数据类型
+        else:
+            logger.warning(f"Unsupported item type: {type(item)}")
             return None
     
     def _download_image(self, url):
@@ -215,15 +267,17 @@ class SplashDownloader:
                 logger.error("❌ Failed to fetch splash list")
                 return False
                 
-            # 处理每个开屏图
+            # 处理每个开屏图项目
             for item in splash_list:
                 try:
-                    # 获取图片URL
-                    img_url = item.get('thumb') or item.get('image') or item.get('url')
+                    # 获取图片URL - 支持多种数据结构
+                    img_url = self._parse_image_url(item)
+                    
                     if img_url:
                         self._download_image(img_url)
                 except Exception as e:
                     logger.error(f"Error processing item: {str(e)}")
+                    self.failed_count += 1
             
             success = True
         except Exception as e:
