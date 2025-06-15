@@ -1,374 +1,282 @@
 #!/usr/bin/env python3
 """
-Bilibili 开屏图下载脚本 - 自动化获取 Bilibili 应用启动画面图片
-修复时间计算错误问题
+Bilibili Splash Image Downloader (Content Hash Deduplication)
 
-版本：1.2.1
-最后更新：2025-06-15
+Version: 4.0.0
+Updated: 2025-06-15
 """
 
-import sys
-import os
-import json
-import time
-import logging
+import argparse
 import hashlib
+import json
+import logging
+import os
+import sys
+import time
 import requests
-from typing import Dict, List, Any
-from urllib.parse import urlparse
-from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
 
-# 日志配置
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
+# 配置根日志器
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.INFO)
+
+# 控制台日志处理
+console_handler = logging.StreamHandler()
+log_formatter = logging.Formatter(
+    '[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
-logger = logging.getLogger('BilibiliSplash')
+console_handler.setFormatter(log_formatter)
+root_logger.addHandler(console_handler)
 
-# 常量定义
-API_URL = "https://app.bilibili.com/x/v2/splash/brand/list"
-APP_KEY = "1d8b6e7d45233436"
-APP_SECRET = "560c52ccd288fed045859ed18bffd973"
-DOWNLOAD_DIR = "app_splash"
-REPORT_JSON = "download_report.json"
-METADATA_JSON = "splash_metadata.json"
-TIMEOUT = 15  # 请求超时时间（秒）
-MAX_RETRIES = 3  # 最大重试次数
-RETRY_DELAY = 2  # 重试延迟（秒）
+logger = logging.getLogger("BilibiliSplash")
 
-# 全局请求头
+# API 端点
+SPLASH_API = "https://app.bilibili.com/x/v2/splash/show"
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-    "Referer": "https://www.bilibili.com/"
+    "User-Agent": USER_AGENT,
+    "Referer": "https://www.bilibili.com/",
+    "Origin": "https://www.bilibili.com",
+    "Accept": "application/json, text/plain, */*",
 }
 
-
-@dataclass
-class SplashItem:
-    """开屏图数据模型"""
-    id: int
-    url: str
-    name: str
-    mode: str
-    source: str
-    show_logo: bool
-    thumbnail_hash: str
-    thumbnail_size: int
-    logo_url: str
-    logo_hash: str
-    logo_size: int
-    filename: str = ""
-    status: str = "pending"
-    error: str = ""
-
-
 class SplashDownloader:
-    """Bilibili 开屏图下载器"""
+    def __init__(self, output_dir="splash", url_file="splash_urls.txt", log_file="splash.log"):
+        # 解析输出目录为绝对路径
+        self.output_dir = Path(output_dir).resolve()
+        self.url_file = Path(url_file).resolve()
+        self.log_file = Path(log_file).resolve()
+        
+        # 确保所有目录和文件存在
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.url_file.touch(exist_ok=True)
+        self.log_file.touch(exist_ok=True)
+        
+        # 初始化文件日志
+        self.setup_file_logger()
+        
+        # 初始化计数器
+        self.downloaded_count = 0
+        self.skipped_count = 0
+        self.failed_count = 0
+        self.start_time = time.time()
+        
+        # 加载URL列表
+        self.url_list = self.load_url_list()
+        
+        logger.info("=" * 70)
+        logger.info(f"⚙️ Splash Downloader Initialized")
+        logger.info(f"📁 Output Directory: {self.output_dir}")
+        logger.info(f"📝 URL File: {self.url_file} ({len(self.url_list)} URLs)")
+        logger.info(f"📋 Log File: {self.log_file}")
+        logger.info(f"🌐 API Endpoint: {SPLASH_API}")
+        logger.info("=" * 70)
     
-    def __init__(self):
-        self.download_dir = DOWNLOAD_DIR
-        self.report_file = os.path.join(DOWNLOAD_DIR, REPORT_JSON)
-        self.metadata_file = os.path.join(DOWNLOAD_DIR, METADATA_JSON)
-        self.splash_items: List[SplashItem] = []
-        self.report_data = {
-            "start_time": "",
-            "end_time": "",
-            "execution_time": 0.0,  # 确保这是一个浮点数
-            "total_count": 0,
-            "success_count": 0,
-            "skipped_count": 0,
-            "failed_count": 0,
-            "errors": []
-        }
-        self._ensure_directory()
+    def setup_file_logger(self):
+        """设置文件日志记录器"""
+        file_handler = logging.FileHandler(self.log_file, mode='a', encoding='utf-8')
+        file_handler.setFormatter(log_formatter)
+        file_handler.setLevel(logging.INFO)
+        root_logger.addHandler(file_handler)
+        
+        # 记录初始化信息
+        logging.info("\n" + "=" * 70)
+        logging.info(f"{' Bilibili Splash Downloader ':^70}")
+        logging.info(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S'):^70}")
+        logging.info("=" * 70)
     
-    def _ensure_directory(self) -> None:
-        """确保下载目录存在"""
-        if not os.path.exists(self.download_dir):
-            os.makedirs(self.download_dir)
-            logger.info(f"创建下载目录: {self.download_dir}")
-    
-    @staticmethod
-    def _generate_sign(params: Dict[str, Any], app_secret: str) -> str:
-        """
-        生成 API 签名
-        
-        Args:
-            params: API 参数字典
-            app_secret: 应用密钥
-            
-        Returns:
-            MD5 签名字符串
-        """
-        sorted_params = sorted(params.items())
-        param_str = "&".join([f"{k}={v}" for k, v in sorted_params])
-        sign_str = param_str + app_secret
-        return hashlib.md5(sign_str.encode("utf-8")).hexdigest()
-    
-    def _get_valid_filename(self, url: str, file_id: int) -> str:
-        """
-        从 URL 生成有效的文件名
-        
-        Args:
-            url: 图片 URL
-            file_id: 开屏图 ID
-            
-        Returns:
-            格式为 {file_id}.{extension} 的文件名
-        """
-        path = urlparse(url).path
-        extension = os.path.splitext(path)[1]
-        
-        # 如果没有扩展名或扩展名无效，使用默认的 .jpg
-        if not extension or extension not in [".jpg", ".jpeg", ".png", ".webp", ".gif"]:
-            return f"{file_id}.jpg"
-        
-        # 去除问号后的参数部分
-        clean_extension = extension.split('?')[0]
-        return f"{file_id}{clean_extension}"
-    
-    def fetch_splash_list(self) -> None:
-        """从 Bilibili API 获取开屏图列表"""
-        logger.info("正在获取开屏图列表...")
-        
-        params = {"appkey": APP_KEY, "ts": int(time.time())}
-        params["sign"] = self._generate_sign(params, APP_SECRET)
-        
+    def load_url_list(self):
+        """加载已处理的URL列表"""
+        url_set = set()
         try:
-            response = requests.get(
-                API_URL, 
-                params=params, 
-                headers=HEADERS, 
-                timeout=TIMEOUT
-            )
+            with open(self.url_file, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        # 格式：hash|url 或 url
+                        parts = line.split('|')
+                        if len(parts) == 2:
+                            url_set.add(parts[1])  # 提取URL
+                        else:
+                            url_set.add(line)
+            logger.info(f"Loaded {len(url_set)} URLs from {self.url_file}")
+        except Exception as e:
+            logger.error(f"Failed to load URL list: {str(e)}")
+        return url_set
+    
+    def save_url_to_list(self, content_hash, url):
+        """将URL保存到文件"""
+        with open(self.url_file, 'a', encoding='utf-8') as f:
+            f.write(f"{content_hash}|{url}\n")
+    
+    def download_image(self, url, metadata=None):
+        """下载单个开屏图 - 使用内容哈希避免重复"""
+        if not url or len(url) < 10:
+            logger.warning("Skipping invalid URL")
+            return None
+            
+        # 检查URL是否已处理
+        if url in self.url_list:
+            self.skipped_count += 1
+            logger.debug(f"URL already processed: {url}")
+            return None
+            
+        # 下载图像
+        try:
+            logger.info(f"🌐 Downloading: {url}")
+            response = requests.get(url, headers=HEADERS, timeout=30, stream=True)
             response.raise_for_status()
             
-            if not response.text.strip():
-                raise ValueError("API 返回空响应")
-            
-            api_data = response.json()
-            
-            # 检查 API 返回状态码
-            if api_data.get("code") != 0:
-                error_msg = f"API错误: code={api_data.get('code')}, message={api_data.get('message')}"
-                logger.error(error_msg)
-                raise RuntimeError(error_msg)
-                
-            splash_list = api_data.get("data", {}).get("list", [])
-            
-            if not splash_list:
-                logger.warning("未获取到开屏图数据")
-                return
-                
-            self.report_data["total_count"] = len(splash_list)
-            logger.info(f"获取到 {len(splash_list)} 个开屏图")
-            
-            # 将 API 数据转换为 SplashItem 对象
-            for item in splash_list:
-                filename = self._get_valid_filename(item["thumb"], item["id"])
-                splash_item = SplashItem(
-                    id=item["id"],
-                    url=item["thumb"],
-                    name=item.get("thumb_name", f"未命名_{item['id']}"),
-                    mode=item.get("mode", "full"),
-                    source=item.get("source", "brand"),
-                    show_logo=item.get("show_logo", True),
-                    thumbnail_hash=item.get("thumb_hash", ""),
-                    thumbnail_size=item.get("thumb_size", 0),
-                    logo_url=item.get("logo_url", ""),
-                    logo_hash=item.get("logo_hash", ""),
-                    logo_size=item.get("logo_size", 0),
-                    filename=filename
-                )
-                self.splash_items.append(splash_item)
-                
-        except requests.RequestException as e:
-            logger.error(f"网络请求失败: {str(e)}")
-            raise
-        except json.JSONDecodeError as e:
-            logger.error(f"JSON解析失败: {str(e)}")
-            logger.debug(f"原始响应内容: {response.text[:500]}")
-            raise
-        except Exception as e:
-            logger.error(f"获取开屏图列表时发生错误: {str(e)}")
-            raise
-    
-    def download_all_splash(self) -> None:
-        """下载所有开屏图"""
-        logger.info("开始下载开屏图...")
-        
-        if not self.splash_items:
-            logger.warning("没有可供下载的开屏图")
-            return
-            
-        for item in self.splash_items:
-            file_path = os.path.join(self.download_dir, item.filename)
-            
-            # 如果文件已存在，跳过下载
-            if os.path.exists(file_path):
-                logger.info(f"文件已存在，跳过: {item.name} ({item.filename})")
-                item.status = "skipped"
-                self.report_data["skipped_count"] += 1
-                continue
-                
-            # 尝试下载（带重试机制）
-            success = False
-            last_error = None
-            for attempt in range(1, MAX_RETRIES + 1):
-                try:
-                    response = requests.get(
-                        item.url, 
-                        headers=HEADERS, 
-                        stream=True,
-                        timeout=TIMEOUT
-                    )
-                    response.raise_for_status()
+            # 计算内容哈希
+            hash_sha256 = hashlib.sha256()
+            content = b''
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    hash_sha256.update(chunk)
+                    content += chunk
                     
-                    # 写入文件
-                    with open(file_path, "wb") as f:
-                        for chunk in response.iter_content(chunk_size=8192):
-                            f.write(chunk)
-                    
-                    # 验证文件大小（如果可用）
-                    if item.thumbnail_size > 0:
-                        file_size = os.path.getsize(file_path)
-                        if abs(file_size - item.thumbnail_size) > file_size * 0.1:
-                            logger.warning(f"文件大小不匹配: 期望 {item.thumbnail_size} 字节, 实际 {file_size} 字节")
-                    
-                    logger.info(f"下载成功: {item.name} ({item.filename})")
-                    item.status = "success"
-                    self.report_data["success_count"] += 1
-                    success = True
+            content_hash = hash_sha256.hexdigest()
+            
+            # 检查是否已有相同内容的文件
+            existing_file = None
+            for file in self.output_dir.iterdir():
+                if file.is_file() and file.stem.startswith(content_hash):
+                    existing_file = file
                     break
-                    
+            
+            # 如果相同内容已存在
+            if existing_file:
+                logger.info(f"🎯 Identical content found: {existing_file.name}")
+                self.skipped_count += 1
+                # 记录URL以防下次重新下载
+                self.url_list.add(url)
+                self.save_url_to_list(content_hash, url)
+                return existing_file
+                
+            # 创建文件名：哈希值 + 日期 + 时间
+            timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            filename = f"{content_hash}_{timestamp}_splash.jpg"
+            save_path = self.output_dir / filename
+            
+            # 保存文件
+            with open(save_path, 'wb') as f:
+                f.write(content)
+            
+            # 记录URL
+            self.url_list.add(url)
+            self.save_url_to_list(content_hash, url)
+            
+            self.downloaded_count += 1
+            file_size = len(content) // 1024
+            logger.info(f"✅ Downloaded: {save_path.name} ({file_size} KB)")
+            
+            return save_path
+        except Exception as e:
+            self.failed_count += 1
+            logger.error(f"❌ Failed to download {url}: {str(e)}")
+            return None
+    
+    def run(self):
+        """执行下载过程"""
+        logger.info("🏁 Starting splash image download")
+        success = False
+        
+        try:
+            splash_list = self.fetch_splash_list()
+            
+            if splash_list is None:
+                logger.error("❌ Failed to fetch splash list")
+                return False
+                
+            # 处理每个开屏图
+            for splash in splash_list:
+                try:
+                    thumb_url = splash.get('thumb')
+                    if thumb_url:
+                        self.download_image(thumb_url, splash)
                 except Exception as e:
-                    last_error = e
-                    logger.error(f"下载尝试 {attempt}/{MAX_RETRIES} 失败: {item.name} - {str(e)}")
-                    if attempt < MAX_RETRIES:
-                        time.sleep(RETRY_DELAY)
-                    
-            if not success:
-                logger.error(f"下载失败: {item.name}")
-                item.status = "failed"
-                item.error = str(last_error) if last_error else "Unknown error"
-                self.report_data["failed_count"] += 1
-                self.report_data["errors"].append({
-                    "id": item.id,
-                    "name": item.name,
-                    "error": item.error
-                })
-    
-    def save_metadata(self) -> None:
-        """保存开屏图元数据到 JSON 文件"""
-        try:
-            metadata = {
-                "last_updated": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
-                "pull_interval": 1800,  # 默认刷新间隔
-                "items": [
-                    {
-                        "id": item.id,
-                        "name": item.name,
-                        "filename": item.filename,
-                        "url": item.url,
-                        "mode": item.mode,
-                        "source": item.source,
-                        "show_logo": item.show_logo,
-                        "thumbnail_hash": item.thumbnail_hash,
-                        "thumbnail_size": item.thumbnail_size,
-                        "logo_url": item.logo_url,
-                        "logo_hash": item.logo_hash,
-                        "logo_size": item.logo_size
-                    }
-                    for item in self.splash_items
-                ]
-            }
+                    logger.error(f"Error processing splash item: {str(e)}")
             
-            with open(self.metadata_file, "w", encoding="utf-8") as f:
-                json.dump(metadata, f, ensure_ascii=False, indent=2)
-            
-            logger.info(f"元数据保存至: {self.metadata_file}")
-            
+            # 即使为空也视为成功
+            success = True
         except Exception as e:
-            logger.error(f"保存元数据失败: {str(e)}")
-    
-    def save_report(self) -> None:
-        """保存下载报告到 JSON 文件"""
-        try:
-            with open(self.report_file, "w", encoding="utf-8") as f:
-                json.dump(self.report_data, f, ensure_ascii=False, indent=2)
-            
-            logger.info(f"报告保存至: {self.report_file}")
-            
-        except Exception as e:
-            logger.error(f"保存报告失败: {str(e)}")
-    
-    def print_summary(self) -> None:
-        """打印下载结果摘要"""
-        duration = self.report_data.get("execution_time", 0)
-        success = self.report_data.get("success_count", 0)
-        skipped = self.report_data.get("skipped_count", 0)
-        failed = self.report_data.get("failed_count", 0)
-        total = success + skipped + failed
-        
-        print("\n" + "=" * 60)
-        print(f"Bilibili 开屏图下载摘要 ({self.report_data['end_time']})")
-        print("=" * 60)
-        print(f"{'总图片数:':<20} {total}")
-        print(f"{'成功下载:':<20} {success}")
-        print(f"{'跳过下载:':<20} {skipped}")
-        print(f"{'下载失败:':<20} {failed}")
-        print(f"{'执行时间:':<20} {duration:.2f}秒")
-        print("=" * 60)
-        
-        if failed > 0:
-            print("错误详情:")
-            for error in self.report_data["errors"][:5]:  # 只显示前5个错误
-                print(f"- ID: {error['id']}, 名称: {error['name']}")
-                print(f"  错误: {error['error']}")
-            if failed > 5:
-                print(f"...还有 {failed - 5} 个错误未显示")
-            print("=" * 60)
-    
-    def run(self) -> int:
-        """执行完整下载流程"""
-        # 记录开始时间为字符串
-        self.report_data["start_time"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-        
-        # 记录实际开始时间为浮点数（用于计算执行时间）
-        actual_start = time.time()
-        
-        try:
-            # 获取开屏图列表
-            self.fetch_splash_list()
-            
-            # 下载所有开屏图
-            self.download_all_splash()
-            
-            # 保存元数据和报告
-            self.save_metadata()
-            
-            return 0
-            
-        except Exception as e:
-            logger.critical(f"运行过程中发生严重错误: {str(e)}", exc_info=True)
-            return 1
+            logger.exception(f"Critical error: {str(e)}")
+            success = False
         finally:
-            # 正确计算执行时间
-            actual_end = time.time()
-            self.report_data["end_time"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-            self.report_data["execution_time"] = round(actual_end - actual_start, 2)
+            # 生成总结报告
+            elapsed = time.time() - self.start_time
+            summary = [
+                "",
+                "=" * 60,
+                f"🚀 Splash Download Summary - {elapsed:.2f} seconds",
+                f"✅ Downloaded: {self.downloaded_count}",
+                f"⏩ Skipped: {self.skipped_count}",
+                f"❌ Failed: {self.failed_count}",
+                f"🏁 Status: {'Success' if success else 'Failed'}",
+                "=" * 60,
+                ""
+            ]
             
-            # 保存报告并打印摘要
-            self.save_report()
-            self.print_summary()
+            # 将摘要写入日志文件
+            with open(self.log_file, 'a', encoding='utf-8') as f:
+                f.write("\n".join(summary))
+            
+            return success
 
+    def fetch_splash_list(self):
+        """获取开屏图列表"""
+        try:
+            logger.info(f"🌍 Requesting splash list from API: {SPLASH_API}")
+            response = requests.get(SPLASH_API, headers=HEADERS, timeout=30)
+            response.raise_for_status()
+            
+            logger.info(f"📡 Received response: {response.status_code}")
+            
+            data = response.json()
+            
+            # 验证API响应
+            if data.get('code') != 0:
+                error_msg = data.get('message', 'Unknown error')
+                logger.error(f"API error: {error_msg}")
+                return None
+                
+            splash_list = data.get('data', {}).get('list', [])
+            if not splash_list:
+                logger.warning("No splash images in API response")
+                return []
+                
+            logger.info(f"📚 Found {len(splash_list)} splash items")
+            return splash_list
+        except Exception as e:
+            logger.error(f"API request failed: {str(e)}")
+            return None
+
+def main():
+    """命令行入口点"""
+    parser = argparse.ArgumentParser(description="Bilibili Splash Image Downloader")
+    parser.add_argument("--output", default="splash", help="Output directory for images")
+    parser.add_argument("--url-file", default="splash_urls.txt", help="File to record downloaded URLs")
+    parser.add_argument("--log-file", default="splash.log", help="Path to log file")
+    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+    args = parser.parse_args()
+    
+    # 设置调试级别
+    if args.debug:
+        root_logger.setLevel(logging.DEBUG)
+        logger.debug("🚧 Debug mode enabled")
+    
+    # 创建下载器实例
+    downloader = SplashDownloader(
+        output_dir=args.output,
+        url_file=args.url_file,
+        log_file=args.log_file
+    )
+    
+    # 执行下载
+    success = downloader.run()
+    sys.exit(0 if success else 1)
 
 if __name__ == "__main__":
-    try:
-        downloader = SplashDownloader()
-        exit_code = downloader.run()
-        sys.exit(exit_code)
-    except KeyboardInterrupt:
-        print("\n操作被用户中断")
-        sys.exit(2)
+    main()
