@@ -39,6 +39,7 @@ jobs:
           echo "Debug Enabled: ${{ inputs.debug }}"
           echo "Existing splash directory:"
           ls -la $OUTPUT_DIR || true
+          echo "Python version: $(python --version)"
 
       # 步骤2: 检出仓库
       - name: "Checkout Repository"
@@ -59,7 +60,8 @@ jobs:
           echo "📦 Installing Python dependencies..."
           python -m pip install --upgrade pip
           pip install requests
-          echo "✅ Dependencies installed"
+          echo "✅ Requests installed: $(pip show requests | grep Version)"
+          echo "Installed packages: $(pip freeze)"
 
       # 步骤5: 执行开屏图下载
       - name: "Download Splash Images"
@@ -78,6 +80,7 @@ jobs:
           fi
           
           echo "🚀 Starting splash image download..."
+          echo "Python path: $(which python)"
           
           # 执行下载命令
           if python "$SCRIPT_FILE" "${cmd_args[@]}"; then
@@ -104,36 +107,57 @@ jobs:
           cat "$LOG_FILE" || true
           
           # 检查常见问题
+          if grep -q "Invalid JSON response" "$LOG_FILE"; then
+            echo "::error::Received non-JSON API response"
+          fi
+          
           if grep -q "API error" "$LOG_FILE"; then
             echo "::error::API returned an error"
           fi
           
-          if grep -q "Invalid API response" "$LOG_FILE"; then
+          if grep -q "Invalid API response structure" "$LOG_FILE"; then
             echo "::error::API response structure is invalid"
           fi
 
-      # 步骤7: 准备Git配置
+      # 步骤7: 网络诊断
+      - name: "Network Diagnosis"
+        if: ${{ env.DOWNLOAD_STATUS != 'Success' }}
+        run: |
+          echo "🌐 Network Diagnosis:"
+          echo "--- Basic connectivity ---"
+          ping -c 3 app.bilibili.com || true
+          
+          echo "--- DNS Lookup ---"
+          nslookup app.bilibili.com || true
+          
+          echo "--- HTTPS Access ---"
+          curl -I https://app.bilibili.com -v || true
+          
+          echo "--- IP Information ---"
+          curl -s https://ipinfo.io/json || true
+
+      # 步骤8: 准备Git配置
       - name: "Setup Git Identity"
         run: |
           git config --global user.name "GitHub Actions Bot"
           git config --global user.email "github-actions@users.noreply.github.com"
           echo "👤 Git user configured"
 
-      # 步骤8: 添加变更
+      # 步骤9: 添加变更
       - name: "Add Changes"
         if: ${{ env.DOWNLOAD_STATUS == 'Success' && env.NEW_FILES_COUNT > 0 }}
         run: |
           git add "$OUTPUT_DIR"
           echo "➕ Added $NEW_FILES_COUNT files to staging area"
 
-      # 步骤9: 提交变更
+      # 步骤10: 提交变更
       - name: "Commit Changes"
         if: ${{ env.DOWNLOAD_STATUS == 'Success' && env.NEW_FILES_COUNT > 0 }}
         run: |
           git commit -m "🌅 Automated splash image update (+$NEW_FILES_COUNT) [skip ci]"
           echo "💾 Changes committed"
 
-      # 步骤10: 推送变更
+      # 步骤11: 推送变更
       - name: "Push Changes"
         if: ${{ env.DOWNLOAD_STATUS == 'Success' && env.NEW_FILES_COUNT > 0 }}
         run: |
@@ -141,12 +165,13 @@ jobs:
           git push origin HEAD:$GITHUB_REF_NAME
           echo "🚀 Changes pushed"
 
-      # 步骤11: 最终报告
+      # 步骤12: 最终报告
       - name: "Final Report"
         run: |
           echo "🏁 WORKFLOW COMPLETED: $DOWNLOAD_STATUS"
           echo "Timestamp: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
           echo "Run ID: $GITHUB_RUN_ID"
+          echo "Repository: $GITHUB_REPOSITORY"
           echo "New files downloaded: $NEW_FILES_COUNT"
           
           if [ "$DOWNLOAD_STATUS" = "Failed" ]; then
