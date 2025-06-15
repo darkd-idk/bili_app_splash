@@ -31,6 +31,7 @@ jobs:
       URL_LIST_FILE: 'splash_urls.txt'
       LOG_FILE: 'splash.log'
       PYTHON_VERSION: '3.11'
+      REQUIREMENTS_FILE: 'requirements.txt'
 
     steps:
       # 步骤1: 准备环境
@@ -56,14 +57,27 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: "pip"
 
-      # 步骤4: 准备输出目录
+      # 步骤4: 安装Python依赖 (关键修复点)
+      - name: "Install Dependencies"
+        run: |
+          echo "📦 Installing Python dependencies..."
+          python -m pip install --upgrade pip
+          if [ -f "$REQUIREMENTS_FILE" ]; then
+            pip install -r $REQUIREMENTS_FILE
+          else
+            echo "⚠️ No requirements.txt found, installing requests only"
+            pip install requests
+          fi
+          echo "✅ Dependencies installed: $(pip freeze | grep requests)"
+
+      # 步骤5: 准备输出目录
       - name: "Prepare Output Directory"
         run: |
           mkdir -p "$SPLASH_DIR"
           touch "$URL_LIST_FILE"
           echo "📁 Output directory prepared: $SPLASH_DIR"
 
-      # 步骤5: 执行开屏图下载
+      # 步骤6: 执行开屏图下载
       - name: "Download Splash Images"
         id: download-step
         run: |
@@ -82,6 +96,9 @@ jobs:
           fi
           
           echo "🚀 Starting splash image download..."
+          echo "Python version: $(python --version)"
+          echo "Python path: $(which python)"
+          echo "Installed packages: $(pip freeze)"
           
           # 执行下载命令
           if python "$SCRIPT_FILE" "${cmd_args[@]}"; then
@@ -97,34 +114,25 @@ jobs:
           echo "NEW_FILES_COUNT=$NEW_FILES_COUNT" >> $GITHUB_ENV
           echo "📥 Downloaded $NEW_FILES_COUNT new files"
 
-      # 步骤6: 调试日志
+      # 步骤7: 调试日志
       - name: "Debug Log"
         if: ${{ env.DOWNLOAD_STATUS != 'Success' || env.NEW_FILES_COUNT == 0 }}
         run: |
           echo "🔍 Download Log Contents:"
           cat "$LOG_FILE" || true
           
-          echo "API Response Analysis:"
-          
-          if grep -q "Cloudflare" "$LOG_FILE"; then
-            echo "::error::Cloudflare challenge detected"
-          fi
-          
-          if grep -q "JSONDecodeError" "$LOG_FILE"; then
-            echo "::error::JSON parsing failed"
-          fi
-          
-          echo "Network Connectivity Test:"
-          curl -I "https://app.bilibili.com" -v || true
+          echo "Environment Information:"
+          python --version
+          pip show requests || true
 
-      # 步骤7: 准备Git配置
+      # 步骤8: 准备Git配置
       - name: "Setup Git Identity"
         run: |
           git config --global user.name "GitHub Actions Bot"
           git config --global user.email "github-actions@users.noreply.github.com"
           echo "👤 Git user configured"
 
-      # 步骤8: 检查变更状态
+      # 步骤9: 检查变更状态
       - name: "Check Changes"
         run: |
           set -euo pipefail
@@ -163,7 +171,7 @@ jobs:
           echo "HAS_CHANGES=$HAS_CHANGES" >> $GITHUB_ENV
           echo "🔄 Changes detected: $HAS_CHANGES"
 
-      # 步骤9: 提交变更
+      # 步骤10: 提交变更
       - name: "Commit Changes"
         if: ${{ env.HAS_CHANGES == 'true' && env.DOWNLOAD_STATUS == 'Success' }}
         run: |
@@ -191,7 +199,7 @@ jobs:
             echo "🟢 No files to commit after staging"
           fi
 
-      # 步骤10: 推送变更
+      # 步骤11: 推送变更
       - name: "Push Changes"
         if: ${{ env.HAS_CHANGES == 'true' && env.DOWNLOAD_STATUS == 'Success' }}
         run: |
@@ -217,7 +225,7 @@ jobs:
           echo "::error::Push failed after $max_retries attempts"
           exit 1
 
-      # 步骤11: 最终状态报告
+      # 步骤12: 最终状态报告
       - name: "Final Report"
         run: |
           echo "🏁 WORKFLOW COMPLETED: $DOWNLOAD_STATUS"
