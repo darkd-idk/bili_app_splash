@@ -2,7 +2,7 @@
 """
 Bilibili Splash Image Downloader (Stable Version)
 
-Version: 9.0.0
+Version: 1.0.0
 Updated: 2025-06-15
 """
 
@@ -90,7 +90,7 @@ class SplashDownloader:
             logger.error(f"Error saving URL: {str(e)}")
     
     def _fetch_splash_list(self):
-        """获取开屏图列表 - 稳定可靠的API调用"""
+        """获取开屏图列表"""
         try:
             logger.info(f"🌐 Requesting splash list from API: {SPLASH_API}")
             
@@ -98,7 +98,7 @@ class SplashDownloader:
             params = {
                 "platform": "android",
                 "device": "phone",
-                "_": int(time.time() * 1000)
+                "_": int(time.time() * 1000)  # 时间戳参数避免缓存
             }
             
             response = requests.get(
@@ -120,7 +120,7 @@ class SplashDownloader:
                 logger.error("API returned empty response")
                 return None
                 
-            # 尝试解析JSON - 使用严格的错误处理
+            # 尝试解析JSON
             try:
                 data = response.json()
                 
@@ -147,6 +147,7 @@ class SplashDownloader:
                 
             except json.JSONDecodeError as e:
                 logger.error(f"JSON parsing failed: {str(e)}")
+                logger.error(f"Response content: {response.text[:500]}...")
                 return None
                 
         except requests.RequestException as e:
@@ -217,7 +218,7 @@ class SplashDownloader:
             # 处理每个开屏图
             for item in splash_list:
                 try:
-                    # 获取图片URL - 支持多种字段格式
+                    # 获取图片URL
                     img_url = item.get('thumb') or item.get('image') or item.get('url')
                     if img_url:
                         self._download_image(img_url)
