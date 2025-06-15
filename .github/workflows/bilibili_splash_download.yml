@@ -89,16 +89,8 @@ jobs:
             echo "❌ Download encountered errors"
           fi
           
-          # 检查下载结果
-          echo "📊 Download results:"
-          if [ -f "$LOG_FILE" ]; then
-            tail -n 20 "$LOG_FILE"
-          else
-            echo "⚠️ No log file found"
-          fi
-          
           # 计算下载文件数
-          NEW_FILES_COUNT=$(find "$SPLASH_DIR" -ctime -1 | wc -l)
+          NEW_FILES_COUNT=$(find "$SPLASH_DIR" -ctime -1 -type f | wc -l)
           echo "NEW_FILES_COUNT=$NEW_FILES_COUNT" >> $GITHUB_ENV
 
       # 步骤7: 准备Git配置
@@ -108,10 +100,13 @@ jobs:
           git config --global user.email "github-actions@users.noreply.github.com"
           echo "👤 Git user configured"
 
-      # 步骤8: 检查变更状态
+      # 步骤8: 检查变更状态（关键修复）
       - name: "Check Changes"
         run: |
           set -euo pipefail
+          
+          # 初始化变更标志
+          HAS_CHANGES="false"
           
           # 显示Git状态
           echo "📋 Current workspace status:"
@@ -124,34 +119,28 @@ jobs:
           git diff -- "$URL_LIST_FILE" || true
           
           # 检测是否有变更
-          CHANGES_DETECTED=false
-          
           # 检查splash目录
           if ! git diff --quiet "$SPLASH_DIR"; then
             echo "🔄 Changes detected in splash directory"
-            CHANGES_DETECTED=true
+            HAS_CHANGES="true"
           fi
           
           # 检查URL文件
           if ! git diff --quiet "$URL_LIST_FILE"; then
             echo "🔄 Changes detected in URL file"
-            CHANGES_DETECTED=true
+            HAS_CHANGES="true"
           fi
           
           # 如果下载了新文件，但Git没检测到变化（可能是因为文件时间戳问题）
-          if [ "$NEW_FILES_COUNT" -gt 0 ] && [ "$CHANGES_DETECTED" = "false" ]; then
+          if [ "$NEW_FILES_COUNT" -gt 0 ] && [ "$HAS_CHANGES" = "false" ]; then
             echo "⚠️ $NEW_FILES_COUNT new files but Git not detecting changes"
             echo "🔄 Forcing detection of new files"
             git add "$SPLASH_DIR" || true
-            CHANGES_DETECTED=true
+            HAS_CHANGES="true"
           fi
           
-          if [ "$CHANGES_DETECTED" = "true" ]; then
-            echo "HAS_CHANGES=true" >> $GITHUB_ENV
-          else
-            echo "HAS_CHANGES=false" >> $GITHUB_ENV
-          fi
-          
+          # 设置环境变量（关键修复：确保变量总是被定义）
+          echo "HAS_CHANGES=$HAS_CHANGES" >> $GITHUB_ENV
           echo "🔄 Changes detected: $HAS_CHANGES"
 
       # 步骤9: 提交变更
@@ -279,7 +268,7 @@ jobs:
             ${{ env.REPORT_DIR }}
             ${{ env.LOG_FILE }}
             ${{ env.URL_LIST_FILE }}
-          if-no-files-found: error
+          if-no-files-found: warn  # 警告而不是错误
           retention-days: 7
 
       # 步骤13: 最终状态
