@@ -25,12 +25,200 @@ jobs:
       REPORT_FILE: 'splash_report.md'
       REPORT_DIR: '.reports'
       URL_LIST_FILE: 'splash_urls.txt'
-      LOG_FILE: 'splash.log'  # 新增明确的日志文件变量
+      LOG_FILE: 'splash.log'
+      PYTHON_VERSION: '3.11'
 
     steps:
-      # ...前面的步骤保持不变...
-      
-      # 步骤10: 生成报告
+      # 步骤1: 准备环境
+      - name: "Setup Environment"
+        run: |
+          echo "🛠️ WORKFLOW STARTED AT: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo "Runner OS: $(uname -a)"
+          echo "Current directory: $(pwd)"
+          echo "Git status:"
+          git status --short || true
+
+      # 步骤2: 检出仓库
+      - name: "Checkout Repository"
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 完整检出历史记录
+
+      # 步骤3: 设置Python环境
+      - name: "Setup Python"
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: "pip"
+
+      # 步骤4: 安装依赖
+      - name: "Install Dependencies"
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          echo "✔️ Python dependencies installed"
+
+      # 步骤5: 确保文件存在
+      - name: "Ensure Files Exist"
+        run: |
+          mkdir -p "$SPLASH_DIR"
+          touch "$URL_LIST_FILE"
+          touch "$LOG_FILE"
+          echo "📂 Ensured all files exist before download:"
+          ls -la $SPLASH_DIR || true
+          ls -la $URL_LIST_FILE $LOG_FILE
+
+      # 步骤6: 执行开屏图下载
+      - name: "Download Splash Images"
+        run: |
+          set -euo pipefail
+          
+          # 重置日志文件
+          echo "[$(date -u '+%Y-%m-%d %H:%M:%S')] 🚀 Start splash download" > "$LOG_FILE"
+          
+          echo "🔽 Starting splash image download..."
+          if python "$SCRIPT_FILE" \
+            --output "$SPLASH_DIR" \
+            --url-file "$URL_LIST_FILE" \
+            --log-file "$LOG_FILE" \
+            --debug; then
+            echo "DOWNLOAD_STATUS=Success" >> $GITHUB_ENV
+            echo "✅ Download completed successfully"
+          else
+            echo "DOWNLOAD_STATUS=Failed" >> $GITHUB_ENV
+            echo "❌ Download encountered errors"
+          fi
+          
+          # 检查下载结果
+          echo "📊 Download results:"
+          if [ -f "$LOG_FILE" ]; then
+            tail -n 20 "$LOG_FILE"
+          else
+            echo "⚠️ No log file found"
+          fi
+          
+          # 计算下载文件数
+          NEW_FILES_COUNT=$(find "$SPLASH_DIR" -ctime -1 | wc -l)
+          echo "NEW_FILES_COUNT=$NEW_FILES_COUNT" >> $GITHUB_ENV
+
+      # 步骤7: 准备Git配置
+      - name: "Setup Git Identity"
+        run: |
+          git config --global user.name "GitHub Actions Bot"
+          git config --global user.email "github-actions@users.noreply.github.com"
+          echo "👤 Git user configured"
+
+      # 步骤8: 检查变更状态
+      - name: "Check Changes"
+        run: |
+          set -euo pipefail
+          
+          # 显示Git状态
+          echo "📋 Current workspace status:"
+          git status --short
+          
+          # 显示文件差异
+          echo "📊 File differences in splash directory:"
+          git diff --name-status "$SPLASH_DIR" || true
+          echo "📊 File differences in URL list:"
+          git diff -- "$URL_LIST_FILE" || true
+          
+          # 检测是否有变更
+          CHANGES_DETECTED=false
+          
+          # 检查splash目录
+          if ! git diff --quiet "$SPLASH_DIR"; then
+            echo "🔄 Changes detected in splash directory"
+            CHANGES_DETECTED=true
+          fi
+          
+          # 检查URL文件
+          if ! git diff --quiet "$URL_LIST_FILE"; then
+            echo "🔄 Changes detected in URL file"
+            CHANGES_DETECTED=true
+          fi
+          
+          # 如果下载了新文件，但Git没检测到变化（可能是因为文件时间戳问题）
+          if [ "$NEW_FILES_COUNT" -gt 0 ] && [ "$CHANGES_DETECTED" = "false" ]; then
+            echo "⚠️ $NEW_FILES_COUNT new files but Git not detecting changes"
+            echo "🔄 Forcing detection of new files"
+            git add "$SPLASH_DIR" || true
+            CHANGES_DETECTED=true
+          fi
+          
+          if [ "$CHANGES_DETECTED" = "true" ]; then
+            echo "HAS_CHANGES=true" >> $GITHUB_ENV
+          else
+            echo "HAS_CHANGES=false" >> $GITHUB_ENV
+          fi
+          
+          echo "🔄 Changes detected: $HAS_CHANGES"
+
+      # 步骤9: 提交变更
+      - name: "Commit Changes"
+        if: ${{ env.HAS_CHANGES == 'true' }}
+        run: |
+          set -euo pipefail
+          
+          # 添加所有已更改的文件
+          echo "➕ Adding changed files..."
+          git add "$SPLASH_DIR" || true
+          git add "$URL_LIST_FILE" || true
+          
+          # 显示添加后的状态
+          echo "📋 Staged changes:"
+          git diff --cached --name-only
+          
+          # 计算实际变更多少文件
+          change_count=$(git diff --cached --name-only | wc -l)
+          echo "📈 Detected $change_count file changes"
+          
+          # 提交变更
+          if [ "$change_count" -gt 0 ]; then
+            echo "💾 Committing changes..."
+            git commit -m "🌅 Automated splash image update [skip ci]"
+            echo "✅ Changes committed"
+          else
+            echo "🟢 No files to commit after staging"
+          fi
+
+      # 步骤10: 推送变更
+      - name: "Push Changes"
+        if: ${{ env.HAS_CHANGES == 'true' }}
+        run: |
+          set -euo pipefail
+          
+          git remote set-url origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/$GITHUB_REPOSITORY"
+          
+          max_retries=3
+          
+          echo "🚚 Attempting to push changes..."
+          for i in $(seq 1 $max_retries); do
+            # 获取远程最新更改
+            git fetch origin
+            
+            # 变基到远程最新状态
+            echo "🔁 Rebasing onto remote branch..."
+            if git rebase origin/$GITHUB_REF_NAME; then
+              # 尝试推送
+              if git push origin HEAD:$GITHUB_REF_NAME; then
+                echo "🚀 Push successful"
+                exit 0
+              else
+                echo "⚠️ Push failed, retry $i/$max_retries in 10s"
+                sleep 10
+              fi
+            else
+              echo "❌ Rebase conflict! Showing git status:"
+              git status
+              exit 1
+            fi
+          done
+          
+          echo "::error::Push failed after $max_retries attempts"
+          exit 1
+
+      # 步骤11: 生成报告
       - name: "Generate Report"
         run: |
           set -euo pipefail
@@ -38,45 +226,68 @@ jobs:
           # 确保报告目录存在
           mkdir -p "$REPORT_DIR"
           
-          # 创建报告文件
+          # 创建报告文件路径
           report_path="$REPORT_DIR/$REPORT_FILE"
           
-          # 确保日志文件存在（即使为空）
-          if [ ! -f "$LOG_FILE" ]; then
-            touch "$LOG_FILE"
-            echo "No log content available" > "$LOG_FILE"
-          fi
-          
-          # 确保URL列表文件存在
-          if [ ! -f "$URL_LIST_FILE" ]; then
-            touch "$URL_LIST_FILE"
-          fi
+          # 确保文件存在
+          touch "$LOG_FILE" || true
+          touch "$URL_LIST_FILE" || true
           
           # 获取日志内容
-          log_content=$(cat "$LOG_FILE")
+          if [ -f "$LOG_FILE" ] && [ -s "$LOG_FILE" ]; then
+            log_content=$(tail -n 50 "$LOG_FILE")
+          else
+            log_content="No log content available"
+          fi
+          
+          # 计算图片数量
+          image_count=0
+          if [ -d "$SPLASH_DIR" ]; then
+            image_count=$(find "$SPLASH_DIR" -type f | wc -l)
+          fi
           
           # 生成报告内容
-          echo "# Splash Image Download Report" > "$report_path"
-          echo "- **Date**: $(date -u)" >> "$report_path"
+          echo "# Bilibili Splash Image Download Report" > "$report_path"
+          echo "- **Date**: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> "$report_path"
           echo "- **Workflow**: $GITHUB_WORKFLOW" >> "$report_path"
           echo "- **Run ID**: [$GITHUB_RUN_ID](https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)" >> "$report_path"
-          echo "- **Download Status**: ${DOWNLOAD_STATUS:-Unknown}" >> "$report_path"
+          echo "- **Download Status**: $DOWNLOAD_STATUS" >> "$report_path"
+          echo "- **Splash Directory**: $SPLASH_DIR" >> "$report_path"
+          echo "- **Image Count**: $image_count" >> "$report_path"
+          echo "- **New Files Downloaded**: $NEW_FILES_COUNT" >> "$report_path"
+          echo "- **Changes Committed**: $HAS_CHANGES" >> "$report_path"
           echo "" >> "$report_path"
           echo "## Download Log" >> "$report_path"
           echo "\`\`\`" >> "$report_path"
           echo "$log_content" >> "$report_path"
           echo "\`\`\`" >> "$report_path"
           
+          # 添加文件列表
+          echo "" >> "$report_path"
+          echo "## URL List File" >> "$report_path"
+          echo "- Path: $URL_LIST_FILE" >> "$report_path"
+          echo "- Size: $(wc -l < "$URL_LIST_FILE") URLs" >> "$report_path"
+          
           echo "📊 Report generated at $report_path"
 
-      # 步骤11: 上传制品（修复版）
+      # 步骤12: 上传制品
       - name: "Upload Artifacts"
         uses: actions/upload-artifact@v4
         with:
           name: "splash-artifacts-${{ github.run_id }}"
           path: |
-            ${{ env.REPORT_DIR }}/${{ env.REPORT_FILE }}
+            ${{ env.REPORT_DIR }}
             ${{ env.LOG_FILE }}
             ${{ env.URL_LIST_FILE }}
-          if-no-files-found: error # 如果找不到文件，报告错误但继续工作流
+          if-no-files-found: error
           retention-days: 7
+
+      # 步骤13: 最终状态
+      - name: "Final Status"
+        run: |
+          echo "🏁 WORKFLOW COMPLETED: $DOWNLOAD_STATUS"
+          echo "Timestamp: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo "Run ID: $GITHUB_RUN_ID"
+          echo "Repository: $GITHUB_REPOSITORY"
+          echo "New files downloaded: $NEW_FILES_COUNT"
+          echo "Changes committed: $HAS_CHANGES"
