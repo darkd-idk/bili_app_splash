@@ -2,6 +2,17 @@ name: Bilibili Splash Download
 
 on:
   workflow_dispatch:
+    inputs:
+      use_proxy:
+        description: 'Use proxy for Bilibili API'
+        required: false
+        type: boolean
+        default: false
+      enable_debug:
+        description: 'Enable debug logging'
+        required: false
+        type: boolean
+        default: false
   schedule:
     - cron: '0 * * * *'  # 每小时运行一次
   
@@ -17,14 +28,7 @@ jobs:
   download-splash:
     name: "Download Bilibili Splash Images"
     runs-on: ubuntu-latest
-    timeout-minutes: 45
-    strategy:
-      matrix:
-        include:
-          - use_proxy: true
-            name: with-proxy
-          - use_proxy: false
-            name: without-proxy
+    timeout-minutes: 30
     
     env:
       SPLASH_DIR: 'splash'
@@ -42,9 +46,9 @@ jobs:
           echo "🛠️ WORKFLOW STARTED AT: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
           echo "Runner OS: $(uname -a)"
           echo "Current directory: $(pwd)"
-          echo "Proxy Strategy: ${{ matrix.name }}"
-          echo "Use Proxy: ${{ matrix.use_proxy }}"
-          echo "Existing splash directory contents:"
+          echo "Use Proxy: ${{ inputs.use_proxy }}"
+          echo "Enable Debug: ${{ inputs.enable_debug }}"
+          echo "Existing splash directory:"
           ls -la splash/ || true
 
       # 步骤2: 检出仓库
@@ -71,57 +75,54 @@ jobs:
       - name: "Ensure Output Directory"
         run: |
           mkdir -p "$SPLASH_DIR"
-          echo "📁 Output directory: $SPLASH_DIR"
-          ls -la "$SPLASH_DIR" || true
+          touch "$URL_LIST_FILE"
+          touch "$LOG_FILE"
+          echo "📂 Output directory: $SPLASH_DIR"
+          echo "🔤 URL list file: $URL_LIST_FILE"
+          echo "📝 Log file: $LOG_FILE"
 
       # 步骤6: 执行开屏图下载
       - name: "Download Splash Images"
-        id: download-step
         run: |
           set -euo pipefail
           
           # 重置日志文件
           echo "[$(date -u '+%Y-%m-%d %H:%M:%S')] 🚀 Start splash download" > "$LOG_FILE"
           
-          echo "🔽 Starting splash image download with mode: ${{ matrix.name }}"
+          echo "🔽 Starting splash image download..."
           
           # 构建命令行参数
-          cmd_args=()
-          cmd_args+=("--output" "$SPLASH_DIR")
-          cmd_args+=("--url-file" "$URL_LIST_FILE")
-          cmd_args+=("--log-file" "$LOG_FILE")
+          cmd_args=(
+            "--output" "$SPLASH_DIR"
+            "--url-file" "$URL_LIST_FILE"
+            "--log-file" "$LOG_FILE"
+          )
           
-          if [[ "${{ matrix.use_proxy }}" == "true" ]]; then
+          if [ "${{ inputs.use_proxy }}" = "true" ]; then
             cmd_args+=("--proxy")
+            echo "🔌 Using proxy connection"
           fi
           
-          if [[ "${INPUT_DEBUG,,}" == "true" ]]; then
+          if [ "${{ inputs.enable_debug }}" = "true" ]; then
             cmd_args+=("--debug")
+            echo "🐛 Debug mode enabled"
           fi
           
-          # 执行命令并捕捉退出状态
-          exit_status=0
-          python "$SCRIPT_FILE" "${cmd_args[@]}" || exit_status=$?
-          
-          # 设置环境变量
-          if [ $exit_status -eq 0 ]; then
+          # 执行下载命令
+          if python "$SCRIPT_FILE" "${cmd_args[@]}"; then
             echo "DOWNLOAD_STATUS=Success" >> $GITHUB_ENV
             echo "✅ Download completed successfully"
           else
             echo "DOWNLOAD_STATUS=Failed" >> $GITHUB_ENV
-            echo "❌ Download encountered errors (exit $exit_status)"
+            echo "❌ Download encountered errors"
           fi
           
           # 计算新文件数
-          NEW_FILES_COUNT=$(find "$SPLASH_DIR" -type f -mmin -5 | wc -l)
+          NEW_FILES_COUNT=$(find "$SPLASH_DIR" -type f -mmin -5 | wc -l) || 0
           echo "NEW_FILES_COUNT=$NEW_FILES_COUNT" >> $GITHUB_ENV
           echo "📥 Downloaded $NEW_FILES_COUNT new files"
-          
-          # 记录下载状态
-          echo "SCRIPT_EXIT_STATUS=$exit_status" >> $GITHUB_ENV
-          echo "EXIT_STATUS=$exit_status" >> $GITHUB_OUTPUT
 
-      # 步骤7: API调试日志
+      # 步骤7: 调试API响应（失败时）
       - name: "Debug API Response"
         if: ${{ env.DOWNLOAD_STATUS != 'Success' || env.NEW_FILES_COUNT == 0 }}
         run: |
@@ -129,20 +130,19 @@ jobs:
           
           echo "🔍 Debugging API response..."
           
-          # 打印API日志
-          echo "=== API Response ==="
+          # 显示API日志
+          echo "=== Splash Download Log ==="
+          cat "$LOG_FILE" || true
+          
+          # 如果有API响应文件，显示它
           if [ -f "api_response.json" ]; then
-            cat "api_response.json"
+            echo "=== API Response ==="
+            cat "api_response.json" || true
           else
             echo "No API response file found"
           fi
           
-          echo ""
-          echo "=== Download Log ==="
-          tail -n 50 "$LOG_FILE"
-          
-          # 添加网络诊断
-          echo ""
+          # 网络连通性测试
           echo "=== Network Test ==="
           curl -I "https://app.bilibili.com" -v || true
           curl -I "https://api.bilibili.com" -v || true
@@ -157,7 +157,6 @@ jobs:
 
       # 步骤9: 检查变更状态
       - name: "Check Changes"
-        id: check-changes
         run: |
           set -euo pipefail
           
@@ -168,7 +167,14 @@ jobs:
           echo "📋 Current workspace status:"
           git status --short
           
-          # 检查SPLASH_DIR目录内容
+          # 检查目录是否存在
+          if [ ! -d "$SPLASH_DIR" ]; then
+            echo "❌ ERROR: Splash directory '$SPLASH_DIR' does not exist!"
+            echo "HAS_CHANGES=false" >> $GITHUB_ENV
+            exit 0
+          fi
+          
+          # 检查目录内容
           echo "📂 Contents of $SPLASH_DIR:"
           ls -la "$SPLASH_DIR" || true
           
@@ -212,13 +218,17 @@ jobs:
           git diff --cached --name-only
           
           # 计算实际变更多少文件
-          change_count=$(git diff --cached --name-only | wc -l)
+          change_count=$(git diff --cached --name-only | wc -l) || 0
           echo "📈 Detected $change_count file changes"
           
           # 提交变更
           if [ "$change_count" -gt 0 ]; then
             echo "💾 Committing changes..."
-            git commit -m "🌅 Automated splash image update [skip ci]"
+            commit_message="🌅 Automated splash image update [skip ci]"
+            if [ "${{ inputs.use_proxy }}" = "true" ]; then
+              commit_message+=" (proxy)"
+            fi
+            git commit -m "$commit_message"
             echo "✅ Changes committed"
           else
             echo "🟢 No files to commit after staging"
@@ -271,41 +281,33 @@ jobs:
           # 创建报告文件路径
           report_path="$REPORT_DIR/$REPORT_FILE"
           
-          # 确保文件存在
-          touch "$LOG_FILE" || true
-          touch "$URL_LIST_FILE" || true
-          
           # 获取日志内容
           if [ -f "$LOG_FILE" ] && [ -s "$LOG_FILE" ]; then
-            log_content=$(tail -n 100 "$LOG_FILE")
+            log_content=$(cat "$LOG_FILE")
           else
             log_content="No log content available"
           fi
           
           # 计算图片数量
-          image_count=0
-          if [ -d "$SPLASH_DIR" ]; then
-            image_count=$(find "$SPLASH_DIR" -type f | wc -l)
-          fi
+          image_count=$(find "$SPLASH_DIR" -type f | wc -l) || 0
           
           # 生成报告内容
-          {
-            echo "# Bilibili Splash Image Download Report"
-            echo "- **Date**: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
-            echo "- **Workflow**: $GITHUB_WORKFLOW"
-            echo "- **Run ID**: [$GITHUB_RUN_ID](https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)"
-            echo "- **Download Status**: $DOWNLOAD_STATUS"
-            echo "- **Exit Status**: $SCRIPT_EXIT_STATUS"
-            echo "- **Splash Directory**: $SPLASH_DIR"
-            echo "- **Image Count**: $image_count"
-            echo "- **New Files Downloaded**: $NEW_FILES_COUNT"
-            echo "- **Changes Committed**: $HAS_CHANGES"
-            echo ""
-            echo "## Download Log"
-            echo "\`\`\`"
-            echo "$log_content"
-            echo "\`\`\`"
-          } > "$report_path"
+          echo "# Bilibili Splash Image Download Report" > "$report_path"
+          echo "- **Date**: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> "$report_path"
+          echo "- **Workflow**: $GITHUB_WORKFLOW" >> "$report_path"
+          echo "- **Run ID**: [$GITHUB_RUN_ID](https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)" >> "$report_path"
+          echo "- **Download Status**: $DOWNLOAD_STATUS" >> "$report_path"
+          echo "- **Proxy Used**: ${{ inputs.use_proxy }}" >> "$report_path"
+          echo "- **Debug Enabled**: ${{ inputs.enable_debug }}" >> "$report_path"
+          echo "- **Splash Directory**: $SPLASH_DIR" >> "$report_path"
+          echo "- **Image Count**: $image_count" >> "$report_path"
+          echo "- **New Files Downloaded**: $NEW_FILES_COUNT" >> "$report_path"
+          echo "- **Changes Committed**: $HAS_CHANGES" >> "$report_path"
+          echo "" >> "$report_path"
+          echo "## Download Log" >> "$report_path"
+          echo "\`\`\`" >> "$report_path"
+          echo "$log_content" >> "$report_path"
+          echo "\`\`\`" >> "$report_path"
           
           echo "📊 Report generated at $report_path"
 
@@ -313,23 +315,16 @@ jobs:
       - name: "Upload Artifacts"
         uses: actions/upload-artifact@v4
         with:
-          name: "splash-artifacts-${{ github.run_id }}-${{ matrix.name }}"
+          name: "splash-artifacts-${{ github.run_id }}"
           path: |
             ${{ env.REPORT_DIR }}/
             ${{ env.LOG_FILE }}
             ${{ env.URL_LIST_FILE }}
             api_response.json
           if-no-files-found: warn
-          retention-days: 14
+          retention-days: 7
 
-      # 步骤14: 报告失败
-      - name: "Fail on Download Error"
-        if: ${{ env.SCRIPT_EXIT_STATUS != 0 }}
-        run: |
-          echo "::error::Splash image download failed with exit code $SCRIPT_EXIT_STATUS"
-          exit $SCRIPT_EXIT_STATUS
-
-      # 步骤15: 最终状态
+      # 步骤14: 最终状态
       - name: "Final Status"
         run: |
           echo "🏁 WORKFLOW COMPLETED: $DOWNLOAD_STATUS"
@@ -338,4 +333,9 @@ jobs:
           echo "Repository: $GITHUB_REPOSITORY"
           echo "New files downloaded: $NEW_FILES_COUNT"
           echo "Changes committed: $HAS_CHANGES"
-          echo "Exit Status: $SCRIPT_EXIT_STATUS"
+          
+          # 如果失败，使任务标记为失败
+          if [ "$DOWNLOAD_STATUS" = "Failed" ]; then
+            echo "::error::Splash image download failed"
+            exit 1
+          fi
