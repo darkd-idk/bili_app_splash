@@ -1,421 +1,282 @@
 #!/usr/bin/env python3
 """
-Bilibili Wallpaper Girl Downloader - Proxy Enabled Version
+Bilibili Splash Image Downloader (Content Hash Deduplication)
 
-Version: 1.8.0
-Fixed: 2025-06-15
+Version: 4.0.0
+Updated: 2025-06-15
 """
 
 import argparse
-import concurrent.futures
+import hashlib
 import json
 import logging
-import math
 import os
 import sys
 import time
-from datetime import datetime
-from urllib.parse import urlparse
-import random
-
 import requests
+from datetime import datetime
+from pathlib import Path
 
-# 创建根日志记录器
+# 配置根日志器
 root_logger = logging.getLogger()
 root_logger.setLevel(logging.INFO)
 
 # 控制台日志处理
 console_handler = logging.StreamHandler()
 log_formatter = logging.Formatter(
-    "[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
+    '[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
 )
 console_handler.setFormatter(log_formatter)
 root_logger.addHandler(console_handler)
 
-logger = logging.getLogger("BilibiliWallpaper")
+logger = logging.getLogger("BilibiliSplash")
 
-# 全局常量
-WALLPAPER_UID = 6823116  # Wallpaper Girl account UID
-API_URL = "https://api.bilibili.com/x/dynamic/feed/draw/doc_list"
-DEFAULT_PAGE_SIZE = 45
-MAX_RETRIES = 7  # 增加重试次数
-RETRY_DELAY = 3  # seconds
-REQUEST_TIMEOUT = 60  # 增加超时时间
-MAX_CONCURRENT_DOWNLOADS = 6  # 降低并发数以避免被封
+# API 端点
+SPLASH_API = "https://app.bilibili.com/x/v2/splash/show"
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 HEADERS = {
     "User-Agent": USER_AGENT,
-    "Referer": f"https://space.bilibili.com/{WALLPAPER_UID}/dynamic",
-    "Origin": "https://space.bilibili.com",
+    "Referer": "https://www.bilibili.com/",
+    "Origin": "https://www.bilibili.com",
     "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6",
-    "Connection": "keep-alive",
-    "DNT": "1",
-    "Sec-Fetch-Dest": "empty",
-    "Sec-Fetch-Mode": "cors",
-    "Sec-Fetch-Site": "same-site",
 }
-URLS_FILE = "urls.txt"
 
-# 公共代理服务器列表 (请定期更新此列表)
-PUBLIC_PROXIES = [
-    "https://www.bing.com/",
-    "https://duckduckgo.com/",
-    "https://searx.be/",
-    "https://www.qwant.com/",
-    "https://search.brave.com/"
-]
-
-class WallpaperDownloader:
-    def __init__(self, sessdata: str, output_dir: str = "bizhiniang", page_size: int = DEFAULT_PAGE_SIZE):
-        self.sessdata = sessdata
-        self.output_dir = os.path.abspath(output_dir)
-        self.page_size = page_size
+class SplashDownloader:
+    def __init__(self, output_dir="splash", url_file="splash_urls.txt", log_file="splash.log"):
+        # 解析输出目录为绝对路径
+        self.output_dir = Path(output_dir).resolve()
+        self.url_file = Path(url_file).resolve()
+        self.log_file = Path(log_file).resolve()
+        
+        # 确保所有目录和文件存在
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.url_file.touch(exist_ok=True)
+        self.log_file.touch(exist_ok=True)
+        
+        # 初始化文件日志
+        self.setup_file_logger()
+        
+        # 初始化计数器
         self.downloaded_count = 0
         self.skipped_count = 0
         self.failed_count = 0
-        self.album_counts = {}
         self.start_time = time.time()
         
-        # 确保输出目录存在
-        os.makedirs(self.output_dir, exist_ok=True)
+        # 加载URL列表
+        self.url_list = self.load_url_list()
         
-        # 初始化URL跟踪文件
-        with open(URLS_FILE, "w", encoding="utf-8") as f:
-            f.write("# Wallpaper URL Record\n")
-            f.write(f"# Generated at {datetime.utcnow().isoformat()}Z\n\n")
-        
-        logger.info(f"Initialized Wallpaper Downloader (Output: {self.output_dir})")
-        logger.debug(f"Using SESSDATA: {sessdata[:4]}...{sessdata[-4:]}")
-
-    def _is_valid_response(self, response_data: dict) -> bool:
-        """验证API响应是否有效"""
-        if response_data is None:
-            logger.error("API response is None")
-            return False
-            
-        if response_data.get("code") != 0:
-            logger.error(f"API returned non-zero code: {response_data.get('code')}, message: {response_data.get('message')}")
-            return False
-            
-        if "data" not in response_data:
-            logger.error("API response missing 'data' field")
-            return False
-            
-        return True
-
-    def _api_request(self, page: int = 0) -> dict:
-        """获取壁纸数据API请求 - 支持代理"""
-        params = {
-            "uid": WALLPAPER_UID,
-            "page_num": page + 1,   # 新API页码从1开始
-            "page_size": self.page_size,
-            "biz": "all",
-        }
-        cookies = {"SESSDATA": self.sessdata}
-        
-        for attempt in range(MAX_RETRIES):
-            try:
-                # 使用随机代理
-                if attempt > 1:
-                    proxy = {"https": random.choice(PUBLIC_PROXIES)}
-                    logger.warning(f"Using proxy for API request: {proxy['https']}")
-                else:
-                    proxy = None
-                
-                logger.debug(f"Attempting API request (page {page + 1}, attempt {attempt + 1}/{MAX_RETRIES})")
-                response = requests.get(
-                    API_URL,
-                    params=params,
-                    headers=HEADERS,
-                    cookies=cookies,
-                    timeout=REQUEST_TIMEOUT,
-                    proxies=proxy
-                )
-                
-                # 记录请求详情
-                logger.debug(f"API URL: {response.url}")
-                logger.debug(f"Status code: {response.status_code}")
-                
-                response.raise_for_status()
-                
-                # 尝试解析JSON响应
-                try:
-                    data = response.json()
-                except json.JSONDecodeError:
-                    # 记录非JSON响应内容
-                    content_sample = response.text[:100] + "..." if response.text else "<empty response>"
-                    logger.error(f"Response is not valid JSON: {content_sample}")
-                    continue
-                
-                # 安全地记录调试信息
-                if data is not None:
-                    try:
-                        items = data.get("data", {}).get("items", [])
-                        item_count = len(items) if isinstance(items, list) else 0
-                        logger.debug(f"API response received, items: {item_count}")
-                    except Exception as e:
-                        logger.debug(f"Debug info failed: {str(e)}")
-                else:
-                    logger.debug("API returned None data")
-                
-                # 验证响应有效性
-                if self._is_valid_response(data):
-                    return data
-                else:
-                    logger.warning(f"Invalid API response (attempt {attempt+1}/{MAX_RETRIES})")
-                    logger.debug(f"Response data: {data}")
-                
-            except requests.RequestException as e:
-                status_code = getattr(e.response, 'status_code', None) if e.response else None
-                logger.warning(f"API request failed (attempt {attempt+1}/{MAX_RETRIES}): {e} (Status: {status_code})")
-            except Exception as e:
-                logger.error(f"Unexpected error during API request: {str(e)}")
-            
-            # 等待后重试
-            wait_time = RETRY_DELAY * (attempt + 1) + random.uniform(0, 2)
-            logger.debug(f"Retrying in {wait_time:.1f} seconds")
-            time.sleep(wait_time)
-        
-        logger.error("Failed to get valid API response after multiple attempts")
-        return {}
-
-    def _download_image(self, url: str, album_path: str) -> None:
-        """下载单张图片 - 支持代理"""
-        image_name = os.path.basename(urlparse(url).path)
-        save_path = os.path.join(album_path, image_name)
-        
-        # 如果已存在则跳过
-        if os.path.exists(save_path):
-            self.skipped_count += 1
-            logger.debug(f"Skipped existing image: {image_name}")
-            return
-        
-        # 下载图片
-        for attempt in range(MAX_RETRIES):
-            try:
-                # 随机选择代理
-                if attempt > 1:
-                    proxy = {"https": random.choice(PUBLIC_PROXIES)}
-                    logger.info(f"Using proxy for download: {proxy['https']}")
-                else:
-                    proxy = None
-                
-                response = requests.get(
-                    url,
-                    headers=HEADERS,
-                    timeout=REQUEST_TIMEOUT,
-                    stream=True,  # 使用流式下载节省内存
-                    proxies=proxy
-                )
-                response.raise_for_status()
-                
-                # 写入文件
-                with open(save_path, "wb") as f:
-                    for chunk in response.iter_content(chunk_size=8192):
-                        if chunk:  # 过滤保活块
-                            f.write(chunk)
-                
-                # 记录URL
-                with open(URLS_FILE, "a", encoding="utf-8") as url_file:
-                    url_file.write(f"{os.path.basename(album_path)},{image_name},{url}\n")
-                
-                self.downloaded_count += 1
-                logger.info(f"Downloaded: {image_name}")
-                return
-            except Exception as e:
-                logger.warning(f"Download failed (attempt {attempt+1}/{MAX_RETRIES}): {url} - {e}")
-                # 随机等待时间避免被封
-                wait_time = RETRY_DELAY * (attempt + 1) * random.uniform(0.5, 1.5)
-                time.sleep(wait_time)
-        
-        self.failed_count += 1
-        logger.error(f"Failed to download: {url}")
-
-    def _process_album(self, album_data: dict) -> None:
-        """处理相册中的图片"""
-        if album_data is None:
-            logger.warning("Album data is None, skipping")
-            return
-            
-        if not isinstance(album_data, dict):
-            logger.warning(f"Invalid album data type: {type(album_data)}, skipping")
-            return
-        
-        # 获取相册元数据
-        upload_time = album_data.get("ctime", "")
-        if not upload_time:
-            logger.warning("Album missing timestamp, using current time")
-            upload_time = datetime.utcnow().strftime("%Y%m%d%H%M%S")
-        else:
-            # 将时间戳转换为日期字符串
-            try:
-                upload_time = datetime.utcfromtimestamp(upload_time).strftime("%Y%m%d%H%M%S")
-            except Exception as e:
-                logger.warning(f"Failed to parse timestamp {upload_time}: {e}")
-                upload_time = datetime.utcnow().strftime("%Y%m%d%H%M%S")
-        
-        # 创建相册目录
-        album_name = upload_time
-        album_path = os.path.join(self.output_dir, album_name)
-        os.makedirs(album_path, exist_ok=True)
-        
-        # 获取所有图片URL
-        image_urls = []
-        pictures = album_data.get("pictures", [])
-        
-        for pic in pictures:
-            if not isinstance(pic, dict):
-                logger.debug(f"Skipping invalid picture data: {pic}")
-                continue
-                
-            img_src = pic.get("img_src", "")
-            if img_src:
-                # 尝试处理相对URL
-                if not img_src.startswith("http"):
-                    img_src = f"https://i0.hdslb.com/{img_src}"
-                image_urls.append(img_src)
-        
-        # 记录相册统计
-        self.album_counts[album_name] = len(image_urls)
-        
-        # 跳过没有图片的相册
-        if not image_urls:
-            logger.info(f"Skipping empty album: {album_name}")
-            return
-            
-        logger.info(f"Processing album: {album_name} ({len(image_urls)} images)")
-        
-        # 使用线程池处理图片 - 减少并发数避免被封
-        concurrency = min(MAX_CONCURRENT_DOWNLOADS, max(1, len(image_urls) // 2))
-        if image_urls:
-            with concurrent.futures.ThreadPoolExecutor(
-                max_workers=concurrency
-            ) as executor:
-                futures = []
-                for url in image_urls:
-                    future = executor.submit(self._download_image, url, album_path)
-                    futures.append(future)
-                
-                # 等待所有下载完成
-                for future in concurrent.futures.as_completed(futures):
-                    try:
-                        future.result()
-                    except Exception as e:
-                        logger.error(f"Download exception: {e}")
-                        self.failed_count += 1
-
-    def get_total_albums(self) -> int:
-        """获取相册总数 - 新API不再提供总数，改为使用分页探测"""
-        # 尝试获取第一页数据
-        api_data = self._api_request(0)
-        if not api_data:
-            logger.error("API request failed, no data returned")
-            return 0
-            
-        # 检查是否有数据
-        items = api_data.get("data", {}).get("items", [])
-        if not items:
-            logger.error("No albums found in first page")
-            return 0
-            
-        # 由于API不返回总数，我们假设有足够的数据需要多页处理
-        return 1000  # 设置一个足够大的值，确保处理所有相册
-
-    def run(self) -> None:
-        """主执行方法"""
-        logger.info("Starting wallpaper sync process")
-        
-        # 获取相册总数并计算页数
-        total_albums = self.get_total_albums()
-        if total_albums <= 0:
-            logger.error("No albums found, exiting")
-            return
-            
-        pages = math.ceil(total_albums / self.page_size)
-        logger.info(f"Processing up to {pages} pages")
-        
-        # 处理每一页
-        for page in range(pages):
-            logger.info(f"Processing page {page+1}/{pages}")
-            api_data = self._api_request(page)
-            
-            if not api_data:
-                logger.error(f"Page {page} returned no data")
-                continue
-                
-            data_sec = api_data.get("data", {})
-            items = data_sec.get("items", [])
-            
-            # 跳过没有相册的页面
-            if not items:
-                logger.info(f"Page {page+1} returned no albums, stopping")
-                break
-                
-            # 处理相册
-            for album_data in items:
-                self._process_album(album_data)
-            
-            # 限制请求频率 - 随机延迟避免被封
-            delay = random.uniform(1.0, 3.0)
-            logger.info(f"Waiting {delay:.1f} seconds before next page")
-            time.sleep(delay)
-        
-        # 生成最终报告
-        elapsed = time.time() - self.start_time
-        logger.info("\n" + "=" * 60)
-        logger.info(f"Wallpaper Sync Completed - {elapsed:.1f} seconds")
-        logger.info(f"- Downloaded: {self.downloaded_count} new images")
-        logger.info(f"- Skipped: {self.skipped_count} existing images")
-        logger.info(f"- Failed: {self.failed_count} downloads")
-        logger.info(f"- Albums processed: {len(self.album_counts)}")
-        if self.album_counts:
-            latest_album = max(self.album_counts, key=self.album_counts.get)
-            logger.info(f"- Largest album: {latest_album} ({self.album_counts[latest_album]} images)")
-        logger.info("=" * 60)
-
-def setup_logging(log_file: str = None, debug: bool = False):
-    """配置日志系统"""
-    # 设置日志级别
-    log_level = logging.DEBUG if debug else logging.INFO
-    root_logger.setLevel(log_level)
-    console_handler.setLevel(log_level)
+        logger.info("=" * 70)
+        logger.info(f"⚙️ Splash Downloader Initialized")
+        logger.info(f"📁 Output Directory: {self.output_dir}")
+        logger.info(f"📝 URL File: {self.url_file} ({len(self.url_list)} URLs)")
+        logger.info(f"📋 Log File: {self.log_file}")
+        logger.info(f"🌐 API Endpoint: {SPLASH_API}")
+        logger.info("=" * 70)
     
-    # 配置文件日志
-    if log_file:
-        # 确保日志目录存在
-        log_dir = os.path.dirname(log_file)
-        if log_dir and not os.path.exists(log_dir):
-            os.makedirs(log_dir)
-            
-        file_handler = logging.FileHandler(log_file, mode='w')
+    def setup_file_logger(self):
+        """设置文件日志记录器"""
+        file_handler = logging.FileHandler(self.log_file, mode='a', encoding='utf-8')
         file_handler.setFormatter(log_formatter)
-        file_handler.setLevel(log_level)
+        file_handler.setLevel(logging.INFO)
         root_logger.addHandler(file_handler)
+        
+        # 记录初始化信息
+        logging.info("\n" + "=" * 70)
+        logging.info(f"{' Bilibili Splash Downloader ':^70}")
+        logging.info(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S'):^70}")
+        logging.info("=" * 70)
+    
+    def load_url_list(self):
+        """加载已处理的URL列表"""
+        url_set = set()
+        try:
+            with open(self.url_file, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        # 格式：hash|url 或 url
+                        parts = line.split('|')
+                        if len(parts) == 2:
+                            url_set.add(parts[1])  # 提取URL
+                        else:
+                            url_set.add(line)
+            logger.info(f"Loaded {len(url_set)} URLs from {self.url_file}")
+        except Exception as e:
+            logger.error(f"Failed to load URL list: {str(e)}")
+        return url_set
+    
+    def save_url_to_list(self, content_hash, url):
+        """将URL保存到文件"""
+        with open(self.url_file, 'a', encoding='utf-8') as f:
+            f.write(f"{content_hash}|{url}\n")
+    
+    def download_image(self, url, metadata=None):
+        """下载单个开屏图 - 使用内容哈希避免重复"""
+        if not url or len(url) < 10:
+            logger.warning("Skipping invalid URL")
+            return None
+            
+        # 检查URL是否已处理
+        if url in self.url_list:
+            self.skipped_count += 1
+            logger.debug(f"URL already processed: {url}")
+            return None
+            
+        # 下载图像
+        try:
+            logger.info(f"🌐 Downloading: {url}")
+            response = requests.get(url, headers=HEADERS, timeout=30, stream=True)
+            response.raise_for_status()
+            
+            # 计算内容哈希
+            hash_sha256 = hashlib.sha256()
+            content = b''
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    hash_sha256.update(chunk)
+                    content += chunk
+                    
+            content_hash = hash_sha256.hexdigest()
+            
+            # 检查是否已有相同内容的文件
+            existing_file = None
+            for file in self.output_dir.iterdir():
+                if file.is_file() and file.stem.startswith(content_hash):
+                    existing_file = file
+                    break
+            
+            # 如果相同内容已存在
+            if existing_file:
+                logger.info(f"🎯 Identical content found: {existing_file.name}")
+                self.skipped_count += 1
+                # 记录URL以防下次重新下载
+                self.url_list.add(url)
+                self.save_url_to_list(content_hash, url)
+                return existing_file
+                
+            # 创建文件名：哈希值 + 日期 + 时间
+            timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            filename = f"{content_hash}_{timestamp}_splash.jpg"
+            save_path = self.output_dir / filename
+            
+            # 保存文件
+            with open(save_path, 'wb') as f:
+                f.write(content)
+            
+            # 记录URL
+            self.url_list.add(url)
+            self.save_url_to_list(content_hash, url)
+            
+            self.downloaded_count += 1
+            file_size = len(content) // 1024
+            logger.info(f"✅ Downloaded: {save_path.name} ({file_size} KB)")
+            
+            return save_path
+        except Exception as e:
+            self.failed_count += 1
+            logger.error(f"❌ Failed to download {url}: {str(e)}")
+            return None
+    
+    def run(self):
+        """执行下载过程"""
+        logger.info("🏁 Starting splash image download")
+        success = False
+        
+        try:
+            splash_list = self.fetch_splash_list()
+            
+            if splash_list is None:
+                logger.error("❌ Failed to fetch splash list")
+                return False
+                
+            # 处理每个开屏图
+            for splash in splash_list:
+                try:
+                    thumb_url = splash.get('thumb')
+                    if thumb_url:
+                        self.download_image(thumb_url, splash)
+                except Exception as e:
+                    logger.error(f"Error processing splash item: {str(e)}")
+            
+            # 即使为空也视为成功
+            success = True
+        except Exception as e:
+            logger.exception(f"Critical error: {str(e)}")
+            success = False
+        finally:
+            # 生成总结报告
+            elapsed = time.time() - self.start_time
+            summary = [
+                "",
+                "=" * 60,
+                f"🚀 Splash Download Summary - {elapsed:.2f} seconds",
+                f"✅ Downloaded: {self.downloaded_count}",
+                f"⏩ Skipped: {self.skipped_count}",
+                f"❌ Failed: {self.failed_count}",
+                f"🏁 Status: {'Success' if success else 'Failed'}",
+                "=" * 60,
+                ""
+            ]
+            
+            # 将摘要写入日志文件
+            with open(self.log_file, 'a', encoding='utf-8') as f:
+                f.write("\n".join(summary))
+            
+            return success
+
+    def fetch_splash_list(self):
+        """获取开屏图列表"""
+        try:
+            logger.info(f"🌍 Requesting splash list from API: {SPLASH_API}")
+            response = requests.get(SPLASH_API, headers=HEADERS, timeout=30)
+            response.raise_for_status()
+            
+            logger.info(f"📡 Received response: {response.status_code}")
+            
+            data = response.json()
+            
+            # 验证API响应
+            if data.get('code') != 0:
+                error_msg = data.get('message', 'Unknown error')
+                logger.error(f"API error: {error_msg}")
+                return None
+                
+            splash_list = data.get('data', {}).get('list', [])
+            if not splash_list:
+                logger.warning("No splash images in API response")
+                return []
+                
+            logger.info(f"📚 Found {len(splash_list)} splash items")
+            return splash_list
+        except Exception as e:
+            logger.error(f"API request failed: {str(e)}")
+            return None
 
 def main():
-    """命令行接口"""
-    parser = argparse.ArgumentParser(description="Bilibili Wallpaper Girl Downloader")
-    parser.add_argument("--sessdata", required=True, help="Bilibili session cookie (SESSDATA)")
-    parser.add_argument("--output", default="bizhiniang", help="Output directory for images")
+    """命令行入口点"""
+    parser = argparse.ArgumentParser(description="Bilibili Splash Image Downloader")
+    parser.add_argument("--output", default="splash", help="Output directory for images")
+    parser.add_argument("--url-file", default="splash_urls.txt", help="File to record downloaded URLs")
+    parser.add_argument("--log-file", default="splash.log", help="Path to log file")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
-    parser.add_argument("--log-file", default=None, help="Path to log file")
     args = parser.parse_args()
     
-    # 配置日志
-    setup_logging(args.log_file, args.debug)
+    # 设置调试级别
+    if args.debug:
+        root_logger.setLevel(logging.DEBUG)
+        logger.debug("🚧 Debug mode enabled")
     
-    try:
-        downloader = WallpaperDownloader(
-            sessdata=args.sessdata,
-            output_dir=args.output
-        )
-        downloader.run()
-        sys.exit(0)
-    except Exception as e:
-        logger.critical(f"Critical error: {str(e)}", exc_info=True)
-        sys.exit(1)
+    # 创建下载器实例
+    downloader = SplashDownloader(
+        output_dir=args.output,
+        url_file=args.url_file,
+        log_file=args.log_file
+    )
+    
+    # 执行下载
+    success = downloader.run()
+    sys.exit(0 if success else 1)
 
 if __name__ == "__main__":
     main()
