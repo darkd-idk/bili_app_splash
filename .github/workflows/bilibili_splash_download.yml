@@ -50,6 +50,7 @@ jobs:
           echo "Enable Debug: ${{ inputs.enable_debug }}"
           echo "Existing splash directory:"
           ls -la splash/ || true
+          echo "Python version: $(python --version)"
 
       # 步骤2: 检出仓库
       - name: "Checkout Repository"
@@ -68,20 +69,21 @@ jobs:
       - name: "Install Dependencies"
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install requests tzlocal user-agent
           echo "✔️ Python dependencies installed"
 
-      # 步骤5: 准备输出目录
-      - name: "Ensure Output Directory"
+      # 步骤5: 准备输出目录和文件
+      - name: "Prepare Workspace"
         run: |
           mkdir -p "$SPLASH_DIR"
           touch "$URL_LIST_FILE"
           touch "$LOG_FILE"
-          echo "📂 Output directory: $SPLASH_DIR"
-          echo "🔤 URL list file: $URL_LIST_FILE"
-          echo "📝 Log file: $LOG_FILE"
+          echo "📁 Workspace prepared"
+          echo "Output dir: $SPLASH_DIR"
+          echo "URL list: $URL_LIST_FILE"
+          echo "Log file: $LOG_FILE"
 
-      # 步骤6: 执行开屏图下载
+      # 步骤6: 执行开屏图下载（带重试机制）
       - name: "Download Splash Images"
         run: |
           set -euo pipefail
@@ -92,11 +94,10 @@ jobs:
           echo "🔽 Starting splash image download..."
           
           # 构建命令行参数
-          cmd_args=(
-            "--output" "$SPLASH_DIR"
-            "--url-file" "$URL_LIST_FILE"
-            "--log-file" "$LOG_FILE"
-          )
+          cmd_args=()
+          cmd_args+=("--output" "$SPLASH_DIR")
+          cmd_args+=("--url-file" "$URL_LIST_FILE")
+          cmd_args+=("--log-file" "$LOG_FILE")
           
           if [ "${{ inputs.use_proxy }}" = "true" ]; then
             cmd_args+=("--proxy")
@@ -108,45 +109,91 @@ jobs:
             echo "🐛 Debug mode enabled"
           fi
           
-          # 执行下载命令
-          if python "$SCRIPT_FILE" "${cmd_args[@]}"; then
-            echo "DOWNLOAD_STATUS=Success" >> $GITHUB_ENV
-            echo "✅ Download completed successfully"
-          else
-            echo "DOWNLOAD_STATUS=Failed" >> $GITHUB_ENV
-            echo "❌ Download encountered errors"
-          fi
+          # 最大重试次数
+          max_retries=3
+          exit_status=1
+          
+          for ((attempt=1; attempt<=max_retries; attempt++)); do
+            echo "💫 Attempt #$attempt to download splash images"
+            
+            # 执行下载命令
+            if python "$SCRIPT_FILE" "${cmd_args[@]}"; then
+              echo "DOWNLOAD_STATUS=Success" >> $GITHUB_ENV
+              echo "✅ Download completed successfully"
+              exit_status=0
+              break
+            else
+              echo "❌ Download attempt $attempt failed"
+              
+              # 如果不是最后一次尝试，等待一段时间后重试
+              if [ $attempt -lt $max_retries ]; then
+                wait_time=$((attempt * 10))
+                echo "⏳ Retrying in $wait_time seconds..."
+                sleep $wait_time
+              else
+                echo "DOWNLOAD_STATUS=Failed" >> $GITHUB_ENV
+                echo "❌ All download attempts failed"
+              fi
+            fi
+          done
           
           # 计算新文件数
           NEW_FILES_COUNT=$(find "$SPLASH_DIR" -type f -mmin -5 | wc -l) || 0
           echo "NEW_FILES_COUNT=$NEW_FILES_COUNT" >> $GITHUB_ENV
           echo "📥 Downloaded $NEW_FILES_COUNT new files"
+          
+          # 保存退出状态
+          echo "SCRIPT_EXIT_STATUS=$exit_status" >> $GITHUB_ENV
+          echo "EXIT_STATUS=$exit_status" >> $GITHUB_OUTPUT
+          exit $exit_status
 
-      # 步骤7: 调试API响应（失败时）
-      - name: "Debug API Response"
+      # 步骤7: API响应分析
+      - name: "Analyze API Response"
         if: ${{ env.DOWNLOAD_STATUS != 'Success' || env.NEW_FILES_COUNT == 0 }}
         run: |
           set -euo pipefail
           
-          echo "🔍 Debugging API response..."
+          echo "🔍 Analyzing API response..."
           
-          # 显示API日志
-          echo "=== Splash Download Log ==="
-          cat "$LOG_FILE" || true
+          # 列出所有API响应文件
+          echo "=== API Response Files ==="
+          find . -name "api_response_*.txt" | while read file; do
+            echo "📄 $file"
+            echo "Size: $(stat -c%s "$file") bytes"
+            head -c 200 "$file"
+            echo ""
+          done
           
-          # 如果有API响应文件，显示它
-          if [ -f "api_response.json" ]; then
-            echo "=== API Response ==="
-            cat "api_response.json" || true
+          # 检查Cloudflare
+          if grep -q "Cloudflare" $(find . -name "api_response_*.txt" -print -quit); then
+            echo "::error::Cloudflare challenge detected"
+          fi
+          
+          # 检查内容类型
+          content_type=$(find . -name "api_response_*.txt" -print0 | xargs -0 head -n 1 | grep -i "content-type" || true)
+          if [[ -n "$content_type" ]]; then
+            echo "Content-Type: $content_type"
           else
-            echo "No API response file found"
+            echo "::warning::No Content-Type header found"
+          fi
+          
+          # 尝试手动解析JSON
+          if command -v jq &> /dev/null; then
+            echo "=== JSON Validation ==="
+            find . -name "api_response_*.txt" | while read file; do
+              if head -1 "$file" | grep -q "{"; then
+                jq . "$file" > /dev/null && echo "✅ Valid JSON: $file" || echo "❌ Invalid JSON: $file"
+              fi
+            done
+          else
+            echo "⚠️ jq not installed, skipping JSON validation"
           fi
           
           # 网络连通性测试
           echo "=== Network Test ==="
           curl -I "https://app.bilibili.com" -v || true
           curl -I "https://api.bilibili.com" -v || true
-          curl "https://ipinfo.io" || true
+          curl "https://ipinfo.io" -m 5 || true
 
       # 步骤8: 准备Git配置
       - name: "Setup Git Identity"
@@ -167,9 +214,9 @@ jobs:
           echo "📋 Current workspace status:"
           git status --short
           
-          # 检查目录是否存在
+          # 检查SPLASH_DIR是否存在
           if [ ! -d "$SPLASH_DIR" ]; then
-            echo "❌ ERROR: Splash directory '$SPLASH_DIR' does not exist!"
+            echo "❌ Splash directory '$SPLASH_DIR' does not exist!"
             echo "HAS_CHANGES=false" >> $GITHUB_ENV
             exit 0
           fi
@@ -202,9 +249,9 @@ jobs:
           echo "HAS_CHANGES=$HAS_CHANGES" >> $GITHUB_ENV
           echo "🔄 Changes detected: $HAS_CHANGES"
 
-      # 步骤10: 提交变更
+      # 步骤10: 提交变更（如果下载成功且有变更）
       - name: "Commit Changes"
-        if: ${{ env.HAS_CHANGES == 'true' }}
+        if: ${{ env.DOWNLOAD_STATUS == 'Success' && env.HAS_CHANGES == 'true' }}
         run: |
           set -euo pipefail
           
@@ -224,11 +271,7 @@ jobs:
           # 提交变更
           if [ "$change_count" -gt 0 ]; then
             echo "💾 Committing changes..."
-            commit_message="🌅 Automated splash image update [skip ci]"
-            if [ "${{ inputs.use_proxy }}" = "true" ]; then
-              commit_message+=" (proxy)"
-            fi
-            git commit -m "$commit_message"
+            git commit -m "🌅 Automated splash image update [skip ci]"
             echo "✅ Changes committed"
           else
             echo "🟢 No files to commit after staging"
@@ -236,7 +279,7 @@ jobs:
 
       # 步骤11: 推送变更
       - name: "Push Changes"
-        if: ${{ env.HAS_CHANGES == 'true' }}
+        if: ${{ env.DOWNLOAD_STATUS == 'Success' && env.HAS_CHANGES == 'true' }}
         run: |
           set -euo pipefail
           
@@ -264,7 +307,7 @@ jobs:
               echo "❌ Rebase conflict! Showing git status:"
               git status
               exit 1
-            fi
+            end
           done
           
           echo "::error::Push failed after $max_retries attempts"
@@ -297,12 +340,14 @@ jobs:
           echo "- **Workflow**: $GITHUB_WORKFLOW" >> "$report_path"
           echo "- **Run ID**: [$GITHUB_RUN_ID](https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)" >> "$report_path"
           echo "- **Download Status**: $DOWNLOAD_STATUS" >> "$report_path"
+          echo "- **Exit Status**: $SCRIPT_EXIT_STATUS" >> "$report_path"
           echo "- **Proxy Used**: ${{ inputs.use_proxy }}" >> "$report_path"
           echo "- **Debug Enabled**: ${{ inputs.enable_debug }}" >> "$report_path"
           echo "- **Splash Directory**: $SPLASH_DIR" >> "$report_path"
           echo "- **Image Count**: $image_count" >> "$report_path"
           echo "- **New Files Downloaded**: $NEW_FILES_COUNT" >> "$report_path"
           echo "- **Changes Committed**: $HAS_CHANGES" >> "$report_path"
+          echo "- **Raw API Responses**: $(find . -name "api_response_*.txt" | wc -l) files" >> "$report_path"
           echo "" >> "$report_path"
           echo "## Download Log" >> "$report_path"
           echo "\`\`\`" >> "$report_path"
@@ -320,7 +365,7 @@ jobs:
             ${{ env.REPORT_DIR }}/
             ${{ env.LOG_FILE }}
             ${{ env.URL_LIST_FILE }}
-            api_response.json
+            $(find . -name "api_response_*.txt")
           if-no-files-found: warn
           retention-days: 7
 
@@ -333,9 +378,10 @@ jobs:
           echo "Repository: $GITHUB_REPOSITORY"
           echo "New files downloaded: $NEW_FILES_COUNT"
           echo "Changes committed: $HAS_CHANGES"
+          echo "Exit Status: $SCRIPT_EXIT_STATUS"
           
           # 如果失败，使任务标记为失败
-          if [ "$DOWNLOAD_STATUS" = "Failed" ]; then
-            echo "::error::Splash image download failed"
+          if [ "$SCRIPT_EXIT_STATUS" != "0" ]; then
+            echo "::error::Splash image download failed with exit code $SCRIPT_EXIT_STATUS"
             exit 1
           fi
