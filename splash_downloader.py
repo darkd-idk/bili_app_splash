@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Bilibili Splash Image Downloader (Simplified Initial Version)
+Bilibili Splash Image Downloader (Final Fix Version)
 
-Version: 1.0.0
+Version: 1.1.0
 Updated: 2025-06-15
-Based on initial implementation
+Fixes: JSON parsing errors and sys import
 """
 
 import requests
@@ -15,6 +15,7 @@ import logging
 import argparse
 from datetime import datetime
 import hashlib
+import sys  # 添加sys模块导入
 
 # 配置日志
 logger = logging.getLogger("BilibiliSplash")
@@ -25,7 +26,7 @@ logging.basicConfig(
 )
 
 # API配置
-SPLASH_API = 'http://app.bilibili.com/x/v2/splash/brand/list?appkey=1d8b6e7d45233436&ts=0&sign=78a89e153cd6231a4a4d55013aa063ce'
+SPLASH_API = 'https://app.bilibili.com/x/v2/splash/brand/list?appkey=1d8b6e7d45233436&ts=0&sign=78a89e153cd6231a4a4d55013aa063ce'
 
 class SplashDownloader:
     def __init__(self, output_dir="app_splash", list_file="images.json", log_file="splash.log"):
@@ -66,9 +67,10 @@ class SplashDownloader:
     def _load_existing_images(self):
         """加载已有的图片列表"""
         existing_images = {}
-        if os.path.exists(os.path.join(self.output_dir, self.list_file)):
+        list_path = os.path.join(self.output_dir, self.list_file)
+        if os.path.exists(list_path):
             try:
-                with open(os.path.join(self.output_dir, self.list_file), 'r') as f:
+                with open(list_path, 'r') as f:
                     data = json.load(f)
                     if 'list' in data:
                         for img in data['list']:
@@ -84,19 +86,52 @@ class SplashDownloader:
         
         try:
             # 获取API数据
+            logger.info(f"🔍 Fetching splash data from API...")
             req = requests.get(SPLASH_API, timeout=15)
-            json_req = req.json()
             
-            logger.info(f"📡 API status: {json_req.get('code')}")
-            logger.debug(f"Full API response: {json.dumps(json_req, indent=2)}")
-            
-            # 检查API响应
-            if json_req['code'] != 0:
-                logger.error(f"API error: {json_req.get('message')}")
+            # 检查响应状态码
+            logger.info(f"📡 API status code: {req.status_code}")
+            if req.status_code != 200:
+                logger.error(f"API request failed with status: {req.status_code}")
                 return False
                 
+            # 检查响应内容类型
+            content_type = req.headers.get('Content-Type', '').lower()
+            logger.info(f"📄 Content-Type: {content_type}")
+            
+            # 尝试解析JSON
+            try:
+                json_req = req.json()
+                logger.debug(f"API response data: {json_req}")
+            except json.JSONDecodeError as e:
+                # 非JSON响应 - 记录响应内容
+                logger.error(f"JSON parsing failed: {str(e)}")
+                
+                # 检查是否为HTML内容
+                if '<!DOCTYPE html>' in req.text or '<html>' in req.text:
+                    logger.error("⚠️ Received HTML instead of JSON response")
+                    logger.error(f"HTML snippet: {req.text[:500]}")
+                else:
+                    logger.error(f"Response text: {req.text[:500]}")
+                
+                return False
+            
+            # 检查API响应
+            if 'code' not in json_req:
+                logger.error("Invalid API response: Missing 'code' field")
+                return False
+                
+            if json_req['code'] != 0:
+                error_msg = json_req.get('message', 'Unknown error')
+                logger.error(f"API error: {error_msg}")
+                return False
+                
+            # 确保有数据列表
             if 'data' not in json_req or 'list' not in json_req['data']:
                 logger.error("Invalid API response structure")
+                logger.debug(f"Response keys: {list(json_req.keys())}")
+                if 'data' in json_req:
+                    logger.debug(f"Data keys: {list(json_req['data'].keys())}")
                 return False
                 
             # 初始化结果
@@ -107,6 +142,10 @@ class SplashDownloader:
             # 处理每个开屏图
             for img in json_req['data']['list']:
                 try:
+                    if 'id' not in img or 'thumb' not in img:
+                        logger.warning(f"⚠️ Skipping invalid image entry: {img}")
+                        continue
+                        
                     img_id = str(img['id'])
                     img_url = img['thumb']
                     
@@ -132,8 +171,21 @@ class SplashDownloader:
                             continue
                     
                     # 下载图片
+                    logger.info(f"⬇️ Downloading: {img_url}")
                     imgreq = requests.get(img_url, stream=True, timeout=20)
-                    imgreq.raise_for_status()
+                    
+                    # 检查图片响应状态
+                    if imgreq.status_code != 200:
+                        logger.error(f"❌ Image download failed (status {imgreq.status_code}): {img_url}")
+                        self.failed_count += 1
+                        continue
+                    
+                    # 验证内容类型
+                    image_content_type = imgreq.headers.get('Content-Type', '')
+                    if not image_content_type.startswith('image/'):
+                        logger.error(f"❌ Not an image response: {image_content_type}")
+                        self.failed_count += 1
+                        continue
                     
                     # 保存图片
                     try:
@@ -157,7 +209,7 @@ class SplashDownloader:
                         if os.path.exists(file_path):
                             os.remove(file_path)
                         self.failed_count += 1
-                        logger.error(f"❌ Download failed for {img_url}: {str(e)}")
+                        logger.error(f"❌ Save failed for {img_url}: {str(e)}")
                         
                 except Exception as e:
                     self.failed_count += 1
