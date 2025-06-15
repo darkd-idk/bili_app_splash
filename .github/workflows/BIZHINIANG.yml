@@ -117,24 +117,48 @@ jobs:
             echo "🟢 No changes to commit"
           fi
 
-      # 步骤8: 推送变更
-      - name: "Push Changes"
+      # 步骤8: 推送变更（已修复版本）
+      - name: "Push Changes (Fixed)"
         run: |
           set -euo pipefail
           
+          echo "🔐 Setting up GitHub repository access"
           git remote set-url origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/$GITHUB_REPOSITORY"
           
+          echo "⚙️ Configuring Git user"
+          git config user.name "GitHub Actions Bot"
+          git config user.email "github-actions@users.noreply.github.com"
+          
           max_retries=3
+          
           for i in $(seq 1 $max_retries); do
-            if git push origin "HEAD:$GITHUB_REF_NAME"; then
-              echo "🚀 Push successful"
-              exit 0
+            echo "🔄 Attempt $i/$max_retries"
+            
+            # 步骤1: 获取远程最新更改
+            echo "🔁 Fetching latest changes from origin..."
+            git fetch origin
+            
+            # 步骤2: 变基到远程最新状态
+            echo "🧩 Rebasing local changes..."
+            if ! git rebase origin/$GITHUB_REF_NAME; then
+              echo "❗ Rebase failed! Showing git status:"
+              git status
+              echo "::error::Rebase conflict detected. Cannot automatically resolve."
+              exit 1
             fi
-            echo "🔁 Push failed, retry $i/$max_retries in 10s"
-            sleep 10
+            
+            # 步骤3: 尝试推送
+            echo "🚀 Pushing changes..."
+            if git push origin HEAD:$GITHUB_REF_NAME; then
+              echo "🎉 Push successful"
+              exit 0
+            else
+              echo "⚠️ Push failed, waiting 10 seconds before retry..."
+              sleep 10
+            fi
           done
           
-          echo "::error::Push failed after $max_retries attempts"
+          echo "::error::Failed to push changes after $max_retries attempts"
           exit 1
 
       # 步骤9: 生成报告
