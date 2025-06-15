@@ -13,7 +13,7 @@ on:
   
   push:
     paths-ignore:
-      - 'splash/**'
+      - 'app_splash/**'
 
 concurrency:
   group: "${{ github.workflow }}-${{ github.ref }}"
@@ -26,67 +26,49 @@ jobs:
     timeout-minutes: 30
     
     env:
-      SPLASH_DIR: 'splash'
+      OUTPUT_DIR: 'app_splash'
       SCRIPT_FILE: 'splash_downloader.py'
-      URL_LIST_FILE: 'splash_urls.txt'
       LOG_FILE: 'splash.log'
-      PYTHON_VERSION: '3.11'
-      REQUIREMENTS_FILE: 'requirements.txt'
 
     steps:
       # 步骤1: 准备环境
       - name: "Setup Environment"
         run: |
           echo "🛠️ WORKFLOW STARTED AT: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
-          echo "Repository: $GITHUB_REPOSITORY"
           echo "Run ID: $GITHUB_RUN_ID"
           echo "Debug Enabled: ${{ inputs.debug }}"
           echo "Existing splash directory:"
-          ls -la splash/ || true
+          ls -la $OUTPUT_DIR || true
 
       # 步骤2: 检出仓库
       - name: "Checkout Repository"
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # 完整检出历史记录
+          fetch-depth: 0
 
       # 步骤3: 设置Python环境
       - name: "Setup Python"
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          python-version: '3.11'
           cache: "pip"
 
-      # 步骤4: 安装Python依赖 (关键修复点)
+      # 步骤4: 安装依赖
       - name: "Install Dependencies"
         run: |
           echo "📦 Installing Python dependencies..."
           python -m pip install --upgrade pip
-          if [ -f "$REQUIREMENTS_FILE" ]; then
-            pip install -r $REQUIREMENTS_FILE
-          else
-            echo "⚠️ No requirements.txt found, installing requests only"
-            pip install requests
-          fi
-          echo "✅ Dependencies installed: $(pip freeze | grep requests)"
+          pip install requests
+          echo "✅ Dependencies installed"
 
-      # 步骤5: 准备输出目录
-      - name: "Prepare Output Directory"
-        run: |
-          mkdir -p "$SPLASH_DIR"
-          touch "$URL_LIST_FILE"
-          echo "📁 Output directory prepared: $SPLASH_DIR"
-
-      # 步骤6: 执行开屏图下载
+      # 步骤5: 执行开屏图下载
       - name: "Download Splash Images"
-        id: download-step
         run: |
           set -euo pipefail
           
           # 构建命令行参数
           cmd_args=(
-            "--output" "$SPLASH_DIR"
-            "--url-file" "$URL_LIST_FILE"
+            "--output" "$OUTPUT_DIR"
             "--log-file" "$LOG_FILE"
           )
           
@@ -96,9 +78,6 @@ jobs:
           fi
           
           echo "🚀 Starting splash image download..."
-          echo "Python version: $(python --version)"
-          echo "Python path: $(which python)"
-          echo "Installed packages: $(pip freeze)"
           
           # 执行下载命令
           if python "$SCRIPT_FILE" "${cmd_args[@]}"; then
@@ -110,130 +89,66 @@ jobs:
           fi
           
           # 计算新文件数
-          NEW_FILES_COUNT=$(find "$SPLASH_DIR" -type f -mmin -5 | wc -l) || 0
-          echo "NEW_FILES_COUNT=$NEW_FILES_COUNT" >> $GITHUB_ENV
-          echo "📥 Downloaded $NEW_FILES_COUNT new files"
+          new_files=0
+          if [ -d "$OUTPUT_DIR" ]; then
+            new_files=$(find "$OUTPUT_DIR" -type f -name '*.jp*' -mmin -5 | wc -l) || 0
+          fi
+          echo "NEW_FILES_COUNT=$new_files" >> $GITHUB_ENV
+          echo "📥 Downloaded $new_files new files"
 
-      # 步骤7: 调试日志
+      # 步骤6: 调试日志
       - name: "Debug Log"
         if: ${{ env.DOWNLOAD_STATUS != 'Success' || env.NEW_FILES_COUNT == 0 }}
         run: |
           echo "🔍 Download Log Contents:"
           cat "$LOG_FILE" || true
           
-          echo "Environment Information:"
-          python --version
-          pip show requests || true
+          # 检查常见问题
+          if grep -q "API error" "$LOG_FILE"; then
+            echo "::error::API returned an error"
+          fi
+          
+          if grep -q "Invalid API response" "$LOG_FILE"; then
+            echo "::error::API response structure is invalid"
+          fi
 
-      # 步骤8: 准备Git配置
+      # 步骤7: 准备Git配置
       - name: "Setup Git Identity"
         run: |
           git config --global user.name "GitHub Actions Bot"
           git config --global user.email "github-actions@users.noreply.github.com"
           echo "👤 Git user configured"
 
-      # 步骤9: 检查变更状态
-      - name: "Check Changes"
+      # 步骤8: 添加变更
+      - name: "Add Changes"
+        if: ${{ env.DOWNLOAD_STATUS == 'Success' && env.NEW_FILES_COUNT > 0 }}
         run: |
-          set -euo pipefail
-          
-          # 检查目录是否存在
-          if [ ! -d "$SPLASH_DIR" ]; then
-            echo "❌ ERROR: Splash directory '$SPLASH_DIR' does not exist!"
-            echo "HAS_CHANGES=false" >> $GITHUB_ENV
-            exit 0
-          fi
-          
-          # 方法1: 检查未跟踪文件
-          untracked_files=$(git ls-files --others --exclude-standard)
-          if [ -n "$untracked_files" ]; then
-            echo "🔄 Changes detected: untracked files"
-            HAS_CHANGES="true"
-          else
-            HAS_CHANGES="false"
-          fi
-          
-          # 方法2: 检查已修改文件
-          if [ "$HAS_CHANGES" = "false" ] && ! git diff --quiet; then
-            echo "🔄 Changes detected: modified files"
-            HAS_CHANGES="true"
-          fi
-          
-          # 方法3: 如果有新文件但Git没检测到
-          if [ "$NEW_FILES_COUNT" -gt 0 ] && [ "$HAS_CHANGES" = "false" ]; then
-            echo "⚠️ $NEW_FILES_COUNT new files but Git not detecting changes"
-            echo "🔄 Forcing detection of new files"
-            git add "$SPLASH_DIR" || true
-            HAS_CHANGES="true"
-          fi
-          
-          # 设置环境变量
-          echo "HAS_CHANGES=$HAS_CHANGES" >> $GITHUB_ENV
-          echo "🔄 Changes detected: $HAS_CHANGES"
+          git add "$OUTPUT_DIR"
+          echo "➕ Added $NEW_FILES_COUNT files to staging area"
 
-      # 步骤10: 提交变更
+      # 步骤9: 提交变更
       - name: "Commit Changes"
-        if: ${{ env.HAS_CHANGES == 'true' && env.DOWNLOAD_STATUS == 'Success' }}
+        if: ${{ env.DOWNLOAD_STATUS == 'Success' && env.NEW_FILES_COUNT > 0 }}
         run: |
-          set -euo pipefail
-          
-          # 添加所有已更改的文件
-          echo "➕ Adding changed files..."
-          git add "$SPLASH_DIR" || true
-          git add "$URL_LIST_FILE" || true
-          
-          # 显示添加后的状态
-          echo "📋 Staged changes:"
-          git diff --cached --name-only
-          
-          # 计算实际变更多少文件
-          change_count=$(git diff --cached --name-only | wc -l) || 0
-          echo "📈 Detected $change_count file changes"
-          
-          # 提交变更
-          if [ "$change_count" -gt 0 ]; then
-            echo "💾 Committing changes..."
-            git commit -m "🌅 Automated splash image update [skip ci]"
-            echo "✅ Changes committed"
-          else
-            echo "🟢 No files to commit after staging"
-          fi
+          git commit -m "🌅 Automated splash image update (+$NEW_FILES_COUNT) [skip ci]"
+          echo "💾 Changes committed"
 
-      # 步骤11: 推送变更
+      # 步骤10: 推送变更
       - name: "Push Changes"
-        if: ${{ env.HAS_CHANGES == 'true' && env.DOWNLOAD_STATUS == 'Success' }}
+        if: ${{ env.DOWNLOAD_STATUS == 'Success' && env.NEW_FILES_COUNT > 0 }}
         run: |
-          set -euo pipefail
-          
           git remote set-url origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/$GITHUB_REPOSITORY"
-          
-          echo "🚚 Pushing changes..."
-          
-          # 最大重试次数
-          max_retries=3
-          
-          for i in $(seq 1 $max_retries); do
-            if git push origin HEAD:$GITHUB_REF_NAME; then
-              echo "🚀 Push successful"
-              exit 0
-            else
-              echo "⚠️ Push failed, retry $i/$max_retries in 10s"
-              sleep 10
-            fi
-          done
-          
-          echo "::error::Push failed after $max_retries attempts"
-          exit 1
+          git push origin HEAD:$GITHUB_REF_NAME
+          echo "🚀 Changes pushed"
 
-      # 步骤12: 最终状态报告
+      # 步骤11: 最终报告
       - name: "Final Report"
         run: |
           echo "🏁 WORKFLOW COMPLETED: $DOWNLOAD_STATUS"
           echo "Timestamp: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo "Run ID: $GITHUB_RUN_ID"
           echo "New files downloaded: $NEW_FILES_COUNT"
-          echo "Changes committed: $HAS_CHANGES"
           
-          # 如果失败，使任务标记为失败
           if [ "$DOWNLOAD_STATUS" = "Failed" ]; then
             echo "::error::Splash image download failed"
             exit 1
